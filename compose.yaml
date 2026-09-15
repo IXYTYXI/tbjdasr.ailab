@@ -1,0 +1,43 @@
+services:
+  media:
+    image: live-asr-backend:local
+    build: .
+    command: ["python", "media_entry.py"]
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+      - ./certs:/certs:ro
+    ports:
+      - "1935:1935"
+      - "1936:1936"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: &logging
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  api:
+    image: live-asr-backend:local
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes: ["./data:/data"]
+    ports: ["8088:8088"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+  worker:
+    image: live-asr-backend:local
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes: ["./data:/data"]
+    restart: unless-stopped
+    stop_grace_period: 330s
+    logging: *logging

@@ -1,0 +1,14 @@
+.env
+.research/
+.venv/
+data/
+generated/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+.DS_Store
+certs/
+*.pem
+*.key
+*.zip
