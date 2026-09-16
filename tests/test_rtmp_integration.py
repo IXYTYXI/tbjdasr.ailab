@@ -12,7 +12,8 @@ import yaml
 
 @pytest.mark.skipif(not os.getenv('MEDIAMTX_BIN'), reason='Set MEDIAMTX_BIN for real RTMP test')
 @pytest.mark.parametrize('video', [False, True])
-def test_real_rtmp_auth_recording_and_audio_extraction(tmp_path, monkeypatch, video):
+@pytest.mark.parametrize('multi', [False, True])
+def test_real_rtmp_auth_recording_and_audio_extraction(tmp_path, monkeypatch, video, multi):
     from media_entry import configuration
     from app.config import Settings
     from app.worker import Worker
@@ -26,6 +27,9 @@ def test_real_rtmp_auth_recording_and_audio_extraction(tmp_path, monkeypatch, vi
         api_port = sock.getsockname()[1]
     password = 'integration-test-publish-password'
     monkeypatch.setenv('PUBLISH_PASSWORD', password)
+    monkeypatch.setenv('STREAM_PATH', 'live/main')
+    monkeypatch.setenv('STREAM_PATHS', 'live/second' if multi else '')
+    monkeypatch.setenv('RTMPS_ENABLED', 'false')
     monkeypatch.setenv('DATA_DIR', str(tmp_path))
     monkeypatch.setenv('MEDIA_API_PASSWORD', 'c' * 32)
     monkeypatch.setenv('MEDIA_API_ADDRESS', f'127.0.0.1:{api_port}')
@@ -56,8 +60,16 @@ def test_real_rtmp_auth_recording_and_audio_extraction(tmp_path, monkeypatch, vi
             source += ['-t', '7', '-c:a', 'aac', '-f', 'flv']
             denied = subprocess.run(source + [f'rtmp://127.0.0.1:{port}/live/main?user=obs&pass=wrong'], capture_output=True, timeout=15)
             assert denied.returncode != 0
-            sent = subprocess.run(source + [f'rtmp://127.0.0.1:{port}/live/main?user=obs&pass={password}'], capture_output=True, timeout=20)
-            assert sent.returncode == 0, sent.stderr.decode()
+            unknown = subprocess.run(source + [f'rtmp://127.0.0.1:{port}/live/unknown?user=obs&pass={password}'], capture_output=True, timeout=15)
+            assert unknown.returncode != 0
+            from concurrent.futures import ThreadPoolExecutor
+            rooms = ['live/main', 'live/second'] if multi else ['live/main']
+            def send(room):
+                command = [s.replace('frequency=440', 'frequency=880') if room == 'live/second' else s for s in source]
+                return subprocess.run(command + [f'rtmp://127.0.0.1:{port}/{room}?user=obs&pass={password}'], capture_output=True, timeout=20)
+            with ThreadPoolExecutor(max_workers=len(rooms)) as pool:
+                for sent in pool.map(send, rooms):
+                    assert sent.returncode == 0, sent.stderr.decode()
             worker = Worker(Settings(data=tmp_path, api_key='a'*32, signing_key='b'*32,
                                      public_url='http://example.com', media_api_url=f'http://127.0.0.1:{api_port}', orphan_grace=0))
             for _ in range(50):
@@ -82,8 +94,18 @@ def test_real_rtmp_auth_recording_and_audio_extraction(tmp_path, monkeypatch, vi
     worker.discover()
     jobs = worker.db.list_jobs()
     assert jobs, worker.db.summary()
-    total = sum(j['duration'] for j in jobs)
-    assert 6.8 < total < 7.2, (total, contents)
+    assert {j['room'] for j in jobs} == set(rooms)
+    for room in rooms:
+        total = sum(j['duration'] for j in jobs if j['room'] == room)
+        assert 6.8 < total < 7.2, (room, total, contents)
     for job in jobs:
-        assert read_pcm(tmp_path / job['path'])
+        import struct
+        pcm = read_pcm(tmp_path / job['path'])
+        assert pcm
+        # Count positive crossings: different tones prove the streams were not mixed.
+        samples = [v[0] for v in struct.iter_unpack('<h', pcm)]
+        crossings = sum(a <= 0 < b for a, b in zip(samples, samples[1:]))
+        frequency = crossings / (len(samples) / 16000)
+        expected_hz = 880 if job['room'] == 'live/second' else 440
+        assert abs(frequency - expected_hz) < 15, (job['room'], frequency)
     assert worker.db.summary()['assets'] == {'done': len(markers)}

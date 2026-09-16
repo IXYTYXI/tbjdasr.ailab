@@ -20,7 +20,7 @@ OBS 多路推流插件 ── RTMP/RTMPS ── MediaMTX
 ```
 
 - 收流、API、转写分别运行；ASR 网络失败不会阻止 MediaMTX 保存录像。
-- 默认单路 `live/main`，拒绝未授权发布者，拒绝第二发布者顶掉正在推流的同名流。
+- 支持多路同时推流：`STREAM_PATHS` 显式配置额外路径，保留原 `STREAM_PATH`（默认 `live/main`）。拒绝未授权发布者及同名流被第二发布者顶替。
 - MediaMTX 默认约 30 秒分段；视频关键帧间隔会影响实际分段长度。转写前再切成最多 45 秒。
 - 音频统一为 16 kHz、单声道、PCM16 WAV；调用飞书时取出裸 PCM，不发送 WAV 文件头。
 - SQLite 保留提交 UUID、音频 URL、任务阶段、结果、错误和重试时间；请求超时重试使用相同公司任务 ID 和 URL。
@@ -72,6 +72,42 @@ bash deploy.sh 118.196.114.88
 
 先短推 1 分钟，在后端检查分段和转写，并确认现有直播正常。RTMP 地址必须可从直播电脑连接。
 
+### 多直播间同时推流（现有 9030 部署）
+
+在服务器现有 `.env` 中保留所有凭据和 HTTPS/RTMPS 设置，只增加或修改：
+
+```dotenv
+STREAM_PATH=live/main
+STREAM_PATHS=live/taobao,live/jingdong
+```
+
+路径按逗号分隔，允许英文字母、数字、下划线和连字符，格式为 `应用名/流名`；不接受通配符。未填写 `STREAM_PATHS` 的旧部署仍然只开放原路径。
+
+每路 OBS 的服务器地址都填 `rtmps://tbjdasr.ai.lab.yc345.tv:9030/live`。推流密钥如下，密码仍取 `/root/tbjdasr-obs-info.txt` 中原来的值：
+
+| 直播间 | 推流密钥 | 查询的 room |
+|---|---|---|
+| 原测试流 | `main?user=obs&pass=原密码` | `live/main` |
+| 淘宝 | `taobao?user=obs&pass=原密码` | `live/taobao` |
+| 京东 | `jingdong?user=obs&pass=原密码` | `live/jingdong` |
+
+不同直播间必须用不同流名；两台 OBS 同时使用 `main` 时，后一台会被拒绝。同一个 OBS 推送两次相同节目不会变成两个不同音源，服务按接收到的各路内容独立处理。
+
+更新现有交付分支后，在项目目录执行（会重启收流，请安排在测试或停播时）：
+
+```bash
+git pull --ff-only origin codex/obs-asr-backend
+# 编辑现有 .env，添加上面的 STREAM_PATHS；不要重新生成密钥
+docker compose build media
+docker compose up -d --force-recreate media api worker
+```
+
+保留现场 `compose.override.yaml`：media 的 `9030:1936`、api 的 `127.0.0.1:8088:8088` 不用修改；对外继续使用推流 9030 和 HTTPS 443。`PUBLIC_BASE_URL` 应继续为 HTTPS 域名，而非 RTMPS 地址。
+
+`GET /v1/rooms` 返回各路任务状态计数，`configured` 仅表示服务配置允许此路径，不代表正在推流。按 `room` 查询任务、导出 XML 或调用飞书导出脚本即可分别查看各直播间；移除配置路径不会删除其历史任务。
+
+录像按 `data/recordings/应用名/流名/` 分目录；音频和 ASR 请求 ID 独立。队列在各路之间轮流处理，临时失败只重试对应片段。当前仍为单 worker 顺序执行 HTTP 请求，公司异步 ASR 可同时有多段远端任务处理；吞吐受 ASR 限额、磁盘和带宽限制，不保证无限路数或实时转写。
+
 ## 4. 配置两种 ASR
 
 ### 公司 Qwen3 ASR（默认）
@@ -120,6 +156,7 @@ docker compose up -d --force-recreate api worker
 |---|---|
 | `GET /healthz` | API 进程存活，不代表 ASR 或推流在线 |
 | `GET /v1/status` | 任务统计、worker 心跳、磁盘低于 5 GiB 提示 |
+| `GET /v1/rooms` | 各路配置标记和独立任务状态计数（不代表在线状态） |
 | `GET /v1/jobs?room=live/main&limit=100&offset=0` | 分页查询任务和文字 |
 | `GET /v1/jobs/{id}` | 原始 ASR 结果、错误、阶段 |
 | `POST /v1/jobs/{id}/retry` | 失败任务继续原阶段，保留远端任务 ID |
@@ -177,7 +214,7 @@ MEDIAMTX_BIN=/path/to/mediamtx python -m pytest tests/test_rtmp_integration.py -
 
 已覆盖真实 RTMP（音频流及 H.264/AAC 流）、推流鉴权、最后一段保存、FFmpeg 提取、PCM 格式和切片、两家 ASR 协议的模拟 HTTP 测试、签名音频下载、任务幂等和持久恢复。
 
-当前 15 项测试通过（含真实 MediaMTX 音视频推流、故意丢失完成通知后的补扫描），Docker Compose 配置和 Python／Shell 语法检查通过。开发机未运行 Docker daemon，因此未在本机完成 Docker 镜像构建。
+多路测试还覆盖两路同时推送不同频率音频、各路完整时长和内容隔离、未配置流名拒绝、跨直播间队列轮转、分路查询和文档隔离。开发机未运行 Docker daemon，因此本机验证使用原生 MediaMTX 和 FFmpeg，不代表已完成线上部署。
 
 真实 ASR 识别成功与目标 Ubuntu 部署需要在现场完成联调，不用模拟结果冒充识别结果。公司生产 `/health` 首次出现 HTTP 502，随后重新请求返回 HTTP 200 和 `{"status":"ok"}`。飞书真实识别需配置应用凭据和权限。
 

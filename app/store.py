@@ -8,6 +8,7 @@ from contextlib import contextmanager
 class Store:
     def __init__(self, path):
         self.path = str(path)
+        self._last_scheduled_room = ''
         with self.connect() as db:
             db.executescript('''
             PRAGMA journal_mode=WAL;
@@ -22,6 +23,7 @@ class Store:
               submitted_at REAL NOT NULL DEFAULT 0, request_json TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS job_schedule ON jobs(state,next_at);
+            CREATE INDEX IF NOT EXISTS job_room_start ON jobs(room,start);
             CREATE TABLE IF NOT EXISTS assets (
               id TEXT PRIMARY KEY, marker TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
               error TEXT NOT NULL DEFAULT '', updated REAL NOT NULL
@@ -73,7 +75,23 @@ class Store:
 
     def due(self, limit=8):
         with self.connect() as db:
-            return [dict(r) for r in db.execute("SELECT * FROM jobs WHERE state IN ('queued','polling') AND next_at<=? ORDER BY next_at,created LIMIT ?", (time.time(), limit))]
+            rows = db.execute('''SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY room ORDER BY next_at,created,id) AS room_rank
+                FROM jobs WHERE state IN ('queued','polling') AND next_at<=?
+                ) ORDER BY room_rank,CASE WHEN room>? THEN 0 ELSE 1 END,room LIMIT ?''',
+                (time.time(), self._last_scheduled_room, limit))
+            jobs = [{k: r[k] for k in r.keys() if k != 'room_rank'} for r in rows]
+            if jobs:
+                self._last_scheduled_room = jobs[-1]['room']
+            return jobs
+
+    def rooms(self, configured):
+        result = {room: {'room': room, 'configured': True, 'jobs': {}} for room in configured}
+        with self.connect() as db:
+            for row in db.execute('SELECT room,state,COUNT(*) AS count FROM jobs GROUP BY room,state'):
+                info = result.setdefault(row['room'], {'room': row['room'], 'configured': False, 'jobs': {}})
+                info['jobs'][row['state']] = row['count']
+        return [result[room] for room in sorted(result)]
 
     def asset(self, asset_id, marker=None, state=None, error=''):
         with self.connect() as db:

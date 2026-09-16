@@ -25,6 +25,11 @@ def create_app(cfg=None):
 
     guard = [Depends(authorize)]
 
+    @app.get('/v1/rooms', dependencies=guard)
+    def rooms():
+        # Configured is an allowlist flag, not a publisher-online signal.
+        return db.rooms(cfg.rooms)
+
     @app.get('/healthz')
     def health():
         return {'status': 'ok'}

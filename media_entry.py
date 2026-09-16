@@ -3,20 +3,18 @@ import os
 import sys
 from pathlib import Path
 import yaml
+from app.config import stream_paths
 
 
 def configuration():
     password = os.environ.get('PUBLISH_PASSWORD', '')
     if len(password) < 24:
         raise ValueError('PUBLISH_PASSWORD must be generated with init_config.py')
-    room = os.environ.get('STREAM_PATH', 'live/main')
-    import re
-    if not re.fullmatch(r'[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+', room):
-        raise ValueError('STREAM_PATH must have form live/main')
+    rooms = stream_paths()
     cfg = {
         'logLevel': 'info',
         'authMethod': 'internal',
-        'authInternalUsers': [{'user': 'obs', 'pass': password, 'permissions': [{'action': 'publish', 'path': room}]}],
+        'authInternalUsers': [{'user': 'obs', 'pass': password, 'permissions': [{'action': 'publish', 'path': room} for room in rooms]}],
         'rtmp': True, 'rtmpAddress': ':1935',
         'rtsp': False, 'hls': False, 'webrtc': False, 'srt': False,
         'moq': False, 'api': False, 'playback': False,
@@ -28,7 +26,7 @@ def configuration():
             'recordDeleteAfter': '0s', 'overridePublisher': False,
             'runOnRecordSegmentComplete': os.getenv('SEGMENT_HOOK_COMMAND', 'python /app/segment_hook.py'),
         },
-        'paths': {room: {}},
+        'paths': {room: {} for room in rooms},
     }
     api_password = os.environ.get('MEDIA_API_PASSWORD', '')
     if api_password:

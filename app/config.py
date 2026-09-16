@@ -1,10 +1,23 @@
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def stream_paths():
+    """Keep the legacy path while explicitly allowing additional rooms."""
+    paths = [os.getenv('STREAM_PATH', 'live/main').strip()]
+    extra = os.getenv('STREAM_PATHS', '').strip()
+    if extra:
+        paths.extend(p.strip() for p in extra.split(','))
+    if any(not re.fullmatch(r'[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+', p) for p in paths):
+        raise ValueError('STREAM_PATH / STREAM_PATHS must contain paths like live/main')
+    return tuple(dict.fromkeys(paths))
+
+
 @dataclass
 class Settings:
+    rooms: tuple[str, ...] = field(default_factory=stream_paths)
     data: Path = field(default_factory=lambda: Path(os.getenv('DATA_DIR', '/data')).resolve())
     provider: str = field(default_factory=lambda: os.getenv('ASR_PROVIDER', 'company'))
     public_url: str = field(default_factory=lambda: os.getenv('PUBLIC_BASE_URL', '').rstrip('/'))

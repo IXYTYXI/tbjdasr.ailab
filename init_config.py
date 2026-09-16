@@ -23,6 +23,7 @@ AUDIO_SIGNING_KEY={secrets.token_urlsafe(32)}
 PUBLISH_PASSWORD={secrets.token_urlsafe(32)}
 MEDIA_API_PASSWORD={secrets.token_urlsafe(32)}
 STREAM_PATH=live/main
+STREAM_PATHS=live/taobao,live/jingdong
 COMPANY_ASR_URL=http://101.126.77.69:8080
 COMPANY_ASR_HOST=qwen3-dual-asr.ai
 COMPANY_ASR_UID=live-audio
