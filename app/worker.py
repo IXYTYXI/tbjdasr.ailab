@@ -14,6 +14,7 @@ from .config import Settings
 from .providers import Company, Feishu, ProviderError
 from .security import sign
 from .store import Store
+from .documents import save_transcript
 
 log = logging.getLogger(__name__)
 
@@ -148,9 +149,31 @@ class Worker:
                 log.error('Ingest loop failed: %s', type(exc).__name__)
             self.stop.wait(2)
 
+    def publish_transcripts(self):
+        for room in self.db.rooms(self.cfg.rooms):
+            if not room['jobs']:
+                continue
+            with self.db.connect() as db:
+                # Stream a consistent SELECT snapshot without pagination or truncation.
+                rows = db.execute('''SELECT start,duration,provider,state,text FROM jobs
+                                     WHERE room=? ORDER BY start,id''', (room['room'],))
+                save_transcript(self.cfg.data, room['room'], rows)
+
+    def document_loop(self):
+        while not self.stop.is_set():
+            try:
+                self.publish_transcripts()
+                self.db.heartbeat('documents', {'at': time.time(), 'ok': True})
+            except Exception as exc:
+                self.db.heartbeat('documents', {'at': time.time(), 'ok': False, 'error': type(exc).__name__})
+                log.error('Transcript export failed: %s', type(exc).__name__)
+            self.stop.wait(2)
+
     def run(self):
         ingest = threading.Thread(target=self.ingest_loop)
+        documents = threading.Thread(target=self.document_loop)
         ingest.start()
+        documents.start()
         try:
             while not self.stop.is_set():
                 self.db.heartbeat('asr', {'at': time.time(), 'ok': True})
@@ -162,6 +185,8 @@ class Worker:
         finally:
             self.stop.set()
             ingest.join()
+            documents.join()
+            self.publish_transcripts()
 
 
 if __name__ == '__main__':

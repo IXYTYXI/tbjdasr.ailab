@@ -163,11 +163,32 @@ docker compose up -d --force-recreate api worker
 | `POST /v1/jobs/{id}/retry?new_remote_task=true` | 新远端任务 ID 和签名链接重新提交；用于原任务失败／不存在／URL过期 |
 | `GET /v1/assets` | 原始分段提取状态与错误，最近 1000 条 |
 | `POST /v1/assets/{id}/retry` | 重试失败的音频提取 |
+| `GET /v1/transcript.txt?room=live/main&since=...&until=...` | UTF-8 文本逐字稿，支持按直播间和时间范围读取 |
 | `GET /v1/transcript.xml?room=live/main&since=...&until=...` | 结构化逐字稿，时间参数为 UTC Unix 秒 |
 
 自动重试临时网络错误、429 和部分 5xx，指数退避最多 300 秒；连续 8 次失败进入 failed，保留音频。公司排队／处理中每 5 秒查询，最多等待一天。不会把没有成功识别的片段写成正常逐字稿。
 
 API XML 的 `<document>` 是传输根节点。实际写入飞书时导出脚本使用其内部 DocxXML，不传这个包装节点。
+
+### 直播过程中自动产出文字
+
+已有流转文件链路默认每约 30 秒保存一段，然后自动提取音频、提交 ASR、轮询结果。无需停播才开始识别。可显式设置 `RECORD_SEGMENT_DURATION=30s`；视频关键帧可能使片段略长，OBS 建议将关键帧间隔设为 2 秒。30 秒不是端到端延迟承诺，还包含 ASR 排队、识别和后台轮询时间。
+
+worker 自动把已入库片段汇总到：
+
+```text
+data/transcripts/live/main.txt
+data/transcripts/live/taobao.txt
+data/transcripts/live/jingdong.txt
+```
+
+每 2 秒核对一次，按开始时间排列，原子替换文件；排队、失败片段明确标注状态。识别重试成功后替换对应状态，不重复追加文字。数据库为事实来源，重启后可以重建文件。各路文件包含该路全部历史片段，不按每场直播自动拆文档；有时间范围需求用查询接口或飞书导出脚本。没有片段的直播间暂不生成文件。
+
+通过需要 Bearer API_KEY 的 `GET /v1/transcript.txt?room=live/taobao` 读取当前文字，`since` / `until` 可选择直播时间范围；API 每次最多 10000 段，超过时要求缩小范围，自动落盘文件没有这个截断限制。`GET /v1/status` 的 `documents_unhealthy` 与 `worker.documents` 用于检查自动文件输出是否健康。
+
+正常停止推流时，最后不足 30 秒的片段也会关闭并送去识别；等待队列处理完成再导出最终文档。异常断电仍可能丢失尚未落盘的媒体数据。此功能自动生成服务器 TXT，飞书在线文档继续使用下面的用户身份导出脚本，不会擅自使用应用身份创建文档。
+
+更新代码后需重建镜像并重建 worker/API；沿用现场 `.env`、证书和 `compose.override.yaml`。已存在的 worker 不会仅因 Git 拉取而加载新代码。
 
 ## 6. 飞书文档导出
 
@@ -219,3 +240,5 @@ MEDIAMTX_BIN=/path/to/mediamtx python -m pytest tests/test_rtmp_integration.py -
 真实 ASR 识别成功与目标 Ubuntu 部署需要在现场完成联调，不用模拟结果冒充识别结果。公司生产 `/health` 首次出现 HTTP 502，随后重新请求返回 HTTP 200 和 `{"status":"ok"}`。飞书真实识别需配置应用凭据和权限。
 
 参考：[公司 ASR 说明](https://guanghe.feishu.cn/docx/KKXPdK9b3oRdy9xnYpBcIcSxnRf)、[飞书文件 ASR](https://open.feishu.cn/document/server-docs/ai/speech_to_text-v1/file_recognize)、[MediaMTX 录制](https://mediamtx.org/docs/features/record)、[OBS 多路推流插件](https://github.com/sorayuki/obs-multi-rtmp)。
+
+持续转写回归包括真实双路 RTMP 在推流结束前出现 TXT，以及尾段最终进入文档；ASR 返回在测试中明确模拟，不等于已通过公司生产识别联调。

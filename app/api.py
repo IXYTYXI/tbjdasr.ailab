@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.responses import FileResponse, Response
 from .config import Settings
-from .documents import render_xml
+from .documents import render_xml, text_chunks
 from .security import verify
 from .store import Store
 
@@ -41,6 +41,8 @@ def create_app(cfg=None):
         info.update(provider_for_new_jobs=cfg.provider, disk_free_bytes=disk.free,
                     disk_low=disk.free < 5 * 1024 ** 3,
                     worker_stale=any(time.time() - info['worker'].get(k, {}).get('at', 0) > 180 for k in ('ingest', 'asr')))
+        documents = info['worker'].get('documents', {})
+        info['documents_unhealthy'] = not documents.get('ok', False) or time.time() - documents.get('at', 0) > 180
         return info
 
     @app.get('/v1/jobs', dependencies=guard)
@@ -91,11 +93,23 @@ def create_app(cfg=None):
         db.asset(asset_id, state='queued')
         return {'ok': True}
 
-    @app.get('/v1/transcript.xml', dependencies=guard)
-    def transcript(room: str = 'live/main', since: float = 0, until: float = 1e20):
+    def transcript_rows(room, since, until):
+        if not room or since >= until:
+            raise HTTPException(400, 'Specify a room and a valid since/until range')
         rows = db.list_jobs(room, 10001, since, until)
         if len(rows) > 10000:
             raise HTTPException(413, 'Select a smaller since/until time range')
+        return rows
+
+    @app.get('/v1/transcript.txt', dependencies=guard)
+    def transcript_text(room: str = 'live/main', since: float = 0, until: float = 1e20):
+        rows = transcript_rows(room, since, until)
+        return Response(''.join(text_chunks(room, rows)), media_type='text/plain',
+                        headers={'Cache-Control': 'private, no-store'})
+
+    @app.get('/v1/transcript.xml', dependencies=guard)
+    def transcript(room: str = 'live/main', since: float = 0, until: float = 1e20):
+        rows = transcript_rows(room, since, until)
         # DocxXML is a fragment by design; root is only used for XML transport.
         content = '<document>' + render_xml(room, rows) + '</document>'
         return Response(content, media_type='application/xml')

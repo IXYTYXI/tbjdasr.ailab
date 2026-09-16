@@ -18,6 +18,7 @@ if any(c in args.server for c in '\r\n/$'):
 content = f'''PUBLIC_BASE_URL=http://{args.server}:8088
 DATA_DIR=/data
 ASR_PROVIDER=company
+RECORD_SEGMENT_DURATION=30s
 API_KEY={secrets.token_urlsafe(32)}
 AUDIO_SIGNING_KEY={secrets.token_urlsafe(32)}
 PUBLISH_PASSWORD={secrets.token_urlsafe(32)}
