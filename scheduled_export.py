@@ -1,4 +1,5 @@
 """Preview/archive ended duty sessions; requires an authorized lark-cli user."""
+from lark_runtime import command
 import argparse
 from datetime import datetime
 import hashlib
@@ -15,7 +16,7 @@ from session_export import SessionExporter, LarkGateway, call_base
 
 
 def sheets(args):
-    result = subprocess.run(['lark-cli', 'sheets', *args, '--as', 'user', '--format', 'json'],
+    result = subprocess.run(command('sheets', *args, '--as', 'user', '--format', 'json'),
                             capture_output=True, text=True, timeout=180)
     envelope = json.loads(result.stdout)
     if result.returncode or not envelope.get('ok') or envelope.get('identity') != 'user':

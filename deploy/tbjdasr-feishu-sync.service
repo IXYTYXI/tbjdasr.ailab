@@ -1,0 +1,21 @@
+[Unit]
+Description=Livestream transcripts to Feishu documents and session index
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/data/vonjan/program/tbjdasr.ailab
+Environment=LARK_CLI_PROFILE=livestream
+Environment=LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
+Environment=LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/data/vonjan/program/tbjdasr.ailab/.sync-venv/bin/python feishu_sync_service.py --database data/state.sqlite --state data/feishu-sync --interval 30
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=240
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

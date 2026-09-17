@@ -302,7 +302,7 @@ python scheduled_export.py --date 2026-09-17 --apply     # 写入已结束且全
 一条推流的一个排班时段对应一篇文档和一条场次记录。人员保留排班原文，不是实际声纹识别。
 排班起止与实际采集片段起止分别保存；同一跨班片段出现在相邻场次，文档明确提示交班边界。
 失败/未完成的 ASR 或没有音频时不会创建空文档。已有场次使用回执防重复；不确定写入要先核对云端，勿删回执强制重试。
-这是按日执行的归档命令，尚未安装常驻同步服务。长期在服务器执行需要服务器上的用户授权及续期机制。
+这是按日执行的快照归档命令。需要持续增量同步时，使用下文的常驻服务，并完成服务器上的用户授权。
 排班更改不会静默覆盖已归档文档。原始逐字稿、调班备注及源单元格保留以便核对。
 
 ### 飞书持续转写的超时与重复流处理
@@ -315,3 +315,29 @@ python scheduled_export.py --date 2026-09-17 --apply     # 写入已结束且全
 它必须是已配置收流路径的子集；留空仍转写所有路径。未选路径继续收流保存录音，已有任务保留但不调度；
 尚未提取的录音标为 ignored，未来重新纳入选择后可继续提取。状态接口显示 `asr_stream_paths`。
 切换此配置后仅重建 api/worker；无需重启正在收流的 media。
+
+## 11. 常驻增量同步到飞书
+
+`feishu_sync_service.py` 每轮读取已提取的音频任务，每轮结束等待 30 秒，排班每 5 分钟刷新。仅处理 `feishu_sessions.json` 映射的 `live/taobao → 天猫`；每个排班场次创建一个文档和一条多维表格记录，并持续追加成功转写的片段。文档归属已授权用户，存入配置的转写文件夹。
+
+服务器安装：
+
+```sh
+npm install -g @larksuite/cli@1.0.65
+python3 -m venv .sync-venv
+.sync-venv/bin/pip install httpx==0.28.1
+# 配置名为 livestream 的 CLI profile，并完成用户 OAuth 授权。
+# 应用密钥用 --app-secret-stdin 输入，不写在命令参数或日志里。
+cp deploy/tbjdasr-feishu-sync.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now tbjdasr-feishu-sync
+systemctl status tbjdasr-feishu-sync
+```
+
+部署目录不是 `/data/vonjan/program/tbjdasr.ailab` 时，先修改 unit 的 WorkingDirectory 和 ExecStart。CLI 负责刷新用户令牌；用户撤销授权或刷新令牌失效后需重新授权，不能改用 bot 绕过。
+
+`data/feishu-sync/health.json` 保存每轮同步状态，`journalctl -u tbjdasr-feishu-sync` 查看日志。`data/feishu-sync/sessions/` 是持久化回执，必须备份并随部署保留，不能清空后重建。仅启动一个同步实例。启动失败或授权失效不影响录音与 ASR，但飞书同步会停滞并在 health 中报错。
+
+片段按时间追加，未完成片段会阻止同场次后续追加；失败片段不阻塞后续成功文字，表格标记“有失败片段”。排班移除旧日期后仍保留已创建场次并补同步迟到结果。晚到的早期片段标为“补录片段”。已结束场次只标记“已同步现有录音”，不声称采集完整。排班人员或已同步文字变化、创建结果不确定时停止该场次并要求核对；追加响应丢失后读取文档确认内容，禁止盲目重复追加。
+
+旧的 `scheduled_export.py` 是一次性已结束场次快照工具；不要与常驻服务同时归档同一场次。可用 `--once` 运行一轮，进行部署验收。

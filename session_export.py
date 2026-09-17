@@ -1,4 +1,5 @@
 """Archive an explicitly bounded session to user-owned Feishu Docs and Base."""
+from lark_runtime import command
 import argparse
 import fcntl
 import hashlib
@@ -21,7 +22,7 @@ FIELDS = {'场次编号': 'text', '场次名称': 'text', '直播间': 'text',
 
 
 def call_base(args):
-    result = subprocess.run(['lark-cli', 'base', *args, '--as', 'user', '--format', 'json'],
+    result = subprocess.run(command('base', *args, '--as', 'user', '--format', 'json'),
                             capture_output=True, text=True, timeout=180)
     try:
         data = json.loads(result.stdout)

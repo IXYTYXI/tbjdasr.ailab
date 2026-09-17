@@ -1,4 +1,5 @@
 """Export a bounded transcript snapshot using an already-authorized lark-cli user."""
+from lark_runtime import command
 import argparse
 import hashlib
 import json
@@ -13,7 +14,7 @@ FOLDER = 'Lwiof1pEglCsKgdpAU3caUUpnfh'
 
 
 def cli(arguments, content):
-    result = subprocess.run(['lark-cli', 'docs', *arguments, '--as', 'user', '--content', '-'],
+    result = subprocess.run(command('docs', *arguments, '--as', 'user', '--content', '-'),
                             input=content, text=True, capture_output=True, timeout=180)
     try:
         data = json.loads(result.stdout)
