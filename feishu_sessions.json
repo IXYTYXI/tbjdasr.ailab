@@ -3,5 +3,7 @@
   "folder_token": "Lwiof1pEglCsKgdpAU3caUUpnfh",
   "schedule_url": "https://guanghe.feishu.cn/wiki/DqZfwh5hyiDbw6kQq24cMk8Dn1d",
   "schedule_sheet_id": "kmkwYd",
-  "room_groups": {}
+  "room_groups": {
+    "live/taobao": "天猫"
+  }
 }
