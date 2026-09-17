@@ -242,3 +242,41 @@ MEDIAMTX_BIN=/path/to/mediamtx python -m pytest tests/test_rtmp_integration.py -
 参考：[公司 ASR 说明](https://guanghe.feishu.cn/docx/KKXPdK9b3oRdy9xnYpBcIcSxnRf)、[飞书文件 ASR](https://open.feishu.cn/document/server-docs/ai/speech_to_text-v1/file_recognize)、[MediaMTX 录制](https://mediamtx.org/docs/features/record)、[OBS 多路推流插件](https://github.com/sorayuki/obs-multi-rtmp)。
 
 持续转写回归包括真实双路 RTMP 在推流结束前出现 TXT，以及尾段最终进入文档；ASR 返回在测试中明确模拟，不等于已通过公司生产识别联调。
+
+## 9. 按场次同步快照到飞书文档和多维表格
+
+管理端新增 `session_export.py`：为指定直播间和时间范围创建一篇用户身份的飞书文档，存入固定文件夹 `ZvZ0fN9YdlYt26dGCMDcDjo3nMc`，文档完成后才在目标多维表格创建场次记录。逐字稿不写入多维表格。
+
+目标数据表需具备以下字段，写入前脚本会校验实际结构：
+
+| 字段 | 类型 |
+|---|---|
+| 场次编号 | 文本 |
+| 场次名称 | 文本 |
+| 直播间 | 文本 |
+| 开始时间 | 日期时间（Asia/Shanghai） |
+| 结束时间 | 日期时间（Asia/Shanghai） |
+| 转写状态 | 文本 |
+| 转写文档 | 文本／超链接样式 |
+
+在已授权 `lark-cli` 用户身份的管理端设置环境变量 `API_KEY`，执行：
+
+```bash
+python session_export.py \
+  --url https://tbjdasr.ai.lab.yc345.tv \
+  --room live/taobao \
+  --session-id taobao-20260917-001 \
+  --title '淘宝直播 2026-09-17 第1场' \
+  --since 1789610400 --until 1789614000 \
+  --base-url '飞书多维表格的完整链接' --table-id '目标数据表ID'
+```
+
+以上场次编号和时间为用法示例，需要替换为真实场次范围，时间使用 UTC Unix 秒。目标链接通过 `base +url-resolve` 解析；如果链接中包含目标表，`--table-id` 可省略。字段结构不匹配时停止，不会擅自修改现有表。
+
+场次边界目前由参数明确指定，不根据 ASR 完成时间推断开播停播，也尚未自动按断线时长合并场次。导出前确认该时间范围录音已完成提取；所有查到的片段均成功转写才允许同步快照。录音缺失或仍在提取的片段不在任务列表中，不能仅凭一次导出认定源音频覆盖完整。
+
+回执保存在 `generated/feishu-sessions/`，包含文档 ID、表格记录 ID 和内容摘要。保留此目录，单一管理端负责同步快照。相同场次、目标和内容重跑复用已有结果；内容变化时停止要求核对，不自动覆盖人工编辑。文档追加或记录创建结果不确定时停止，不会盲目重试产生重复内容；须核对远端结果和对应回执再恢复。
+
+该入口未接入自动调度，Docker worker 不包含 lark-cli，也不会复制管理端的用户凭据。多维表格目标确认后需要实际联调 CLI 响应结构和用户权限。
+
+多维表格状态为“已同步快照”，不会声称录音无缺失或整场已完成。晚到片段需要核对原文档后进行明确更新；当前脚本不自动覆盖已有快照。时间范围尚未结束时拒绝导出。首次建文档前查询远端场次编号，发现已存在时停止，避免因本地回执缺失而重复创建。
