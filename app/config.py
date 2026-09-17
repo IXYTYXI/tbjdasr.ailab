@@ -19,6 +19,7 @@ def stream_paths():
 class Settings:
     rooms: tuple[str, ...] = field(default_factory=stream_paths)
     data: Path = field(default_factory=lambda: Path(os.getenv('DATA_DIR', '/data')).resolve())
+    asr_rooms: tuple[str, ...] = field(default_factory=lambda: tuple(p.strip() for p in os.getenv('ASR_STREAM_PATHS', '').split(',') if p.strip()))
     provider: str = field(default_factory=lambda: os.getenv('ASR_PROVIDER', 'company'))
     public_url: str = field(default_factory=lambda: os.getenv('PUBLIC_BASE_URL', '').rstrip('/'))
     api_key: str = field(default_factory=lambda: os.getenv('API_KEY', ''))
@@ -38,6 +39,8 @@ class Settings:
     task_timeout: int = 86400
 
     def validate(self):
+        if not set(self.asr_rooms) <= set(self.rooms):
+            raise ValueError('ASR_STREAM_PATHS must be a subset of configured stream paths')
         if self.provider not in ('company', 'feishu'):
             raise ValueError('ASR_PROVIDER must be company or feishu')
         if len(self.api_key) < 24 or len(self.signing_key) < 24:

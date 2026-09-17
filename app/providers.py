@@ -79,7 +79,17 @@ class Feishu:
         return self.token
 
     def transcribe(self, job_id, path):
-        payload = {'speech': {'speech': base64.b64encode(read_pcm(path)).decode()},
+        pcm = read_pcm(path)
+        size = 15 * 32000  # Production long requests returned gateway 504s.
+        parts = [self._transcribe_pcm(f'{job_id}:part:{offset // size}', pcm[offset:offset + size])
+                 for offset in range(0, len(pcm), size)]
+        if len(parts) == 1:
+            return parts[0]
+        return {'text': '\n'.join(part['text'] for part in parts if part['text']),
+                'raw': {'parts': [part['raw'] for part in parts]}}
+
+    def _transcribe_pcm(self, job_id, pcm):
+        payload = {'speech': {'speech': base64.b64encode(pcm).decode()},
                    'config': {'file_id': hashlib.sha256(job_id.encode()).hexdigest()[:16],
                               'format': 'pcm', 'engine_type': '16k_auto'}}
         response = self.client.post(self.BASE + '/speech_to_text/v1/speech/file_recognize',

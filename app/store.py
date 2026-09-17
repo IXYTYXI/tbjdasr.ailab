@@ -73,13 +73,16 @@ class Store:
         with self.connect() as db:
             return [dict(r) for r in db.execute(query + ' ORDER BY start,id LIMIT ? OFFSET ?', (*args, limit, offset))]
 
-    def due(self, limit=8):
+    def due(self, limit=8, rooms=None):
+        if rooms is not None and not rooms:
+            return []
+        room_filter = (' AND room IN (' + ','.join('?' for _ in rooms) + ')') if rooms else ''
         with self.connect() as db:
             rows = db.execute('''SELECT * FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY room ORDER BY next_at,created,id) AS room_rank
-                FROM jobs WHERE state IN ('queued','polling') AND next_at<=?
+                FROM jobs WHERE state IN ('queued','polling') AND next_at<=?''' + room_filter + '''
                 ) ORDER BY room_rank,CASE WHEN room>? THEN 0 ELSE 1 END,room LIMIT ?''',
-                (time.time(), self._last_scheduled_room, limit))
+                (time.time(), *(rooms or ()), self._last_scheduled_room, limit))
             jobs = [{k: r[k] for k in r.keys() if k != 'room_rank'} for r in rows]
             if jobs:
                 self._last_scheduled_room = jobs[-1]['room']

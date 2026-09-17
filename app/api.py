@@ -38,7 +38,7 @@ def create_app(cfg=None):
     def status():
         info = db.summary()
         disk = shutil.disk_usage(cfg.data)
-        info.update(provider_for_new_jobs=cfg.provider, disk_free_bytes=disk.free,
+        info.update(provider_for_new_jobs=cfg.provider, asr_stream_paths=list(cfg.asr_rooms or cfg.rooms), disk_free_bytes=disk.free,
                     disk_low=disk.free < 5 * 1024 ** 3,
                     worker_stale=any(time.time() - info['worker'].get(k, {}).get('at', 0) > 180 for k in ('ingest', 'asr')))
         documents = info['worker'].get('documents', {})

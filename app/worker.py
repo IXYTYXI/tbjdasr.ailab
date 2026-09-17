@@ -37,6 +37,10 @@ class Worker:
                 continue
             try:
                 info = json.loads(marker.read_text())
+                if self.cfg.asr_rooms and info['room'] not in self.cfg.asr_rooms:
+                    if row['state'] != 'ignored':
+                        self.db.asset(asset_id, state='ignored')
+                    continue
                 source = Path(info['path']).resolve()
                 source.relative_to(root.resolve())
                 if not source.is_file() or source.suffix != '.mp4':
@@ -177,7 +181,7 @@ class Worker:
         try:
             while not self.stop.is_set():
                 self.db.heartbeat('asr', {'at': time.time(), 'ok': True})
-                for job in self.db.due():
+                for job in self.db.due(rooms=self.cfg.asr_rooms or None):
                     if self.stop.is_set():
                         break
                     self.step(job)
