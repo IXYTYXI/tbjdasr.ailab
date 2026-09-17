@@ -9,7 +9,7 @@ import subprocess
 import httpx
 from app.documents import render_xml
 
-FOLDER = 'ZvZ0fN9YdlYt26dGCMDcDjo3nMc'
+FOLDER = 'Lwiof1pEglCsKgdpAU3caUUpnfh'
 
 
 def cli(arguments, content):
@@ -49,7 +49,7 @@ def main():
     if not rows:
         raise SystemExit('No transcript segments in this time range.')
     # A snapshot is immutable: rerunning the same snapshot returns the prior receipt.
-    digest = hashlib.sha256(json.dumps(rows, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps({'folder': FOLDER, 'rows': rows}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     receipts = Path('generated/feishu-exports')
     receipts.mkdir(parents=True, exist_ok=True)
     receipt = receipts / f'{digest}.json'

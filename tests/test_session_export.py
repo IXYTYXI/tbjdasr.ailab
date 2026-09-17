@@ -80,3 +80,30 @@ def test_future_session_range_rejected(tmp_path):
     with pytest.raises(ValueError,match='尚未结束'):
         e.export('session-1','live/main',0,time.time()+600,rows(),'测试','base1','tbl1')
     g.create_document.assert_not_called()
+
+
+def test_schedule_metadata_and_cross_boundary_segments(tmp_path):
+    e,g=exporter(tmp_path)
+    schedule={'group':'天猫','personnel':'甲<乙>','since':2,'until':10,'source':'https://example.com/wiki','cell':'B4'}
+    e.export('schedule-1','live/main',2,10,rows(),'排班测试','base1','tbl1',schedule=schedule)
+    fields=g.create_record.call_args.args[2]
+    assert fields['直播人员']=='甲<乙>' and fields['排班单元格']=='B4'
+    header=g.create_document.call_args.args[0]
+    assert '甲&lt;乙&gt;' in header and '跨班' in header
+
+
+def test_gateway_handles_cli_columnar_record_list(monkeypatch):
+    import session_export
+    monkeypatch.setattr(session_export,'call_base',lambda args:{'data':[],'record_id_list':[],'has_more':False})
+    g=session_export.LarkGateway()
+    assert g.find_record('base','table','session','room') is None
+    monkeypatch.setattr(session_export,'call_base',lambda args:{'data':[['value']],'record_id_list':['recA'],'has_more':False})
+    assert g.find_record('base','table','session','room')['id']=='recA'
+
+
+def test_gateway_reads_back_id_when_create_envelope_omits_it(monkeypatch):
+    import session_export
+    monkeypatch.setattr(session_export,'call_base',lambda args:{'created':True,'record':{'add':{'场次编号':'s'}}})
+    g=session_export.LarkGateway()
+    g.find_record=Mock(side_effect=[None,{'id':'recB'}])
+    assert g.create_record('base','table',{'场次编号':'s','直播间':'room'})=='recB'

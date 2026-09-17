@@ -33,11 +33,15 @@ def call_base(args):
 
 
 class LarkGateway:
-    def validate_table(self, base, table):
+    def validate_table(self, base, table, schedule=False):
         data = call_base(['+field-list', '--base-token', base, '--table-id', table, '--limit', '200'])
         fields = data.get('fields', data.get('items', []))
         found = {f['name']: f['type'] for f in fields}
-        if any(found.get(k) != v for k, v in FIELDS.items()):
+        required = dict(FIELDS)
+        if schedule:
+            required.update({'直播人员': 'text', '排班分组': 'text', '排班来源': 'text', '排班单元格': 'text',
+                             '排班开始': 'datetime', '排班结束': 'datetime'})
+        if any(found.get(k) != v for k, v in required.items()):
             raise ValueError('目标表字段缺失或类型不符：' + ', '.join(FIELDS))
 
     def create_document(self, content):
@@ -52,6 +56,13 @@ class LarkGateway:
                                                ['直播间', '==', room]]}
         existing = call_base(['+record-list', '--base-token', base, '--table-id', table,
                               '--filter-json', json.dumps(query, ensure_ascii=False), '--limit', '2'])
+        if 'record_id_list' in existing:
+            ids = existing['record_id_list']
+            if not isinstance(ids, list) or (not ids and existing.get('has_more')):
+                raise RuntimeError('无法确认记录列表是否完整')
+            if len(ids) > 1:
+                raise RuntimeError('发现重复场次记录，请人工核对')
+            return {'id': ids[0]} if ids else None
         records = existing.get('records', existing.get('items'))
         if records is None:
             raise RuntimeError('无法确认表格是否已有此场次，停止创建')
@@ -64,6 +75,9 @@ class LarkGateway:
                           '--json', json.dumps(fields, ensure_ascii=False)])
         record = data['record']
         record_id = record.get('id') or record.get('record_id')
+        if not record_id and data.get('created'):
+            verified = self.find_record(base, table, fields['场次编号'], fields['直播间'])
+            record_id = verified.get('id') if verified else None
         if not record_id or data.get('ignored_fields'):
             raise RuntimeError('记录写入结果不完整，请核对远端记录')
         return record_id
@@ -75,7 +89,7 @@ class SessionExporter:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.gateway = gateway
 
-    def export(self, session_id, room, since, until, rows, title, base, table):
+    def export(self, session_id, room, since, until, rows, title, base, table, schedule=None):
         if not session_id or not room or not title or not base or not table:
             raise ValueError('场次、直播间、标题和目标表不能为空')
         if not math.isfinite(since) or not math.isfinite(until) or since >= until:
@@ -84,12 +98,16 @@ class SessionExporter:
             raise ValueError('场次时间范围尚未结束，不能导出')
         if not rows or any(r['state'] != 'succeeded' for r in rows):
             raise ValueError('场次有未完成或失败的转写，暂不归档')
-        if any(r['room'] != room or not since <= r['start'] < until for r in rows):
+        if schedule and (schedule['since'] != since or schedule['until'] != until):
+            raise ValueError('排班边界与查询边界不同')
+        def belongs(r):
+            return (r['start'] < until and r['start'] + r['duration'] > since) if schedule else since <= r['start'] < until
+        if any(r['room'] != room or not belongs(r) for r in rows):
             raise ValueError('转写片段不属于所选场次')
         rows = sorted(rows, key=lambda r: (r['start'], r['id']))
         snapshot = [{k: r[k] for k in ('id', 'room', 'start', 'duration', 'provider', 'state', 'text')} for r in rows]
         spec = dict(session_id=session_id, room=room, since=float(since), until=float(until), title=title,
-                    base=base, table=table, folder=FOLDER, rows=snapshot)
+                    base=base, table=table, folder=FOLDER, rows=snapshot, schedule=schedule)
         digest = hashlib.sha256(json.dumps(spec, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         key = hashlib.sha256(json.dumps([session_id, room, base, table, FOLDER]).encode()).hexdigest()
         path = self.directory / (key + '.json')
@@ -102,7 +120,7 @@ class SessionExporter:
                 return state
             if state['status'].endswith('_uncertain'):
                 raise RuntimeError('上次飞书写入结果不确定，请核对文档/记录与回执：' + str(path))
-            self.gateway.validate_table(base, table)
+            self.gateway.validate_table(base, table, schedule=bool(schedule))
             def save(status, **values):
                 state.update(status=status, **values)
                 temp = path.with_suffix('.tmp')
@@ -116,6 +134,9 @@ class SessionExporter:
                     raise ValueError('表格已有此场次，请复用原回执或核对远端记录')
                 save('create_uncertain')
                 header = f'<title>{escape(title)}</title><p>场次编号：{escape(session_id)}；直播间：{escape(room)}。</p><p>本篇为所选时间范围内已入库转写的快照；不代表录音采集完整性验收。</p>'
+                if schedule:
+                    header += f'<p>排班分组：{escape(schedule["group"])}；直播人员（按排班原文）：{escape(schedule["personnel"])}；来源单元格：{escape(schedule["cell"])}。</p>'
+                    header += '<p>人员依据排班表，并非声纹识别。跨班音频片段会保留在相邻场次；片段内容可能包含交班前后两位人员。</p>'
                 doc = self.gateway.create_document(header)
                 save('doc_ready', document_id=doc['document_id'],
                      url=doc.get('url') or 'https://guanghe.feishu.cn/docx/' + doc['document_id'], next_index=0)
@@ -134,6 +155,10 @@ class SessionExporter:
                           '开始时间': stamp(min(r['start'] for r in rows)),
                           '结束时间': stamp(max(r['start'] + r['duration'] for r in rows)),
                           '转写状态': '已同步快照', '转写文档': state['url']}
+                if schedule:
+                    fields.update({'直播人员': schedule['personnel'], '排班分组': schedule['group'],
+                                   '排班开始': stamp(since), '排班结束': stamp(until),
+                                   '排班来源': schedule['source'], '排班单元格': schedule['cell']})
                 save('record_uncertain')
                 record_id = self.gateway.create_record(base, table, fields)
                 save('done', record_id=record_id, base_token=base, table_id=table)
