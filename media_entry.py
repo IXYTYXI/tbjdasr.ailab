@@ -34,6 +34,14 @@ def configuration():
             raise ValueError('MEDIA_API_PASSWORD must have at least 24 characters')
         cfg.update(api=True, apiAddress=os.getenv('MEDIA_API_ADDRESS', ':9997'))
         cfg['authInternalUsers'].append({'user': 'worker', 'pass': api_password, 'permissions': [{'action': 'api'}]})
+    if os.getenv('REALTIME_ASR_ENABLED', 'false').lower() == 'true':
+        if not api_password:
+            raise ValueError('Realtime requires MEDIA_API_PASSWORD')
+        selected = tuple(p.strip() for p in os.getenv('ASR_STREAM_PATHS', '').split(',') if p.strip()) or rooms
+        if not set(selected) <= set(rooms):
+            raise ValueError('ASR_STREAM_PATHS must be configured media paths')
+        cfg.update(rtsp=True, rtspAddress=':8554', rtspTransports=['tcp'])
+        cfg['authInternalUsers'][-1]['permissions'].extend({'action': 'read', 'path': room} for room in selected)
     if os.getenv('RTMPS_ENABLED', 'false').lower() == 'true':
         cfg.update(rtmpEncryption='strict', rtmpsAddress=':1936',
                    rtmpServerKey='/certs/server.key', rtmpServerCert='/certs/server.crt')

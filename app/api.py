@@ -11,12 +11,14 @@ from .config import Settings
 from .documents import render_xml, text_chunks
 from .security import verify
 from .store import Store
+from .realtime_store import PreviewStore
 
 
 def create_app(cfg=None):
     cfg = cfg or Settings()
     cfg.validate()
     db = Store(cfg.data / 'state.sqlite')
+    preview = PreviewStore(db)
     app = FastAPI(title='直播收流与语音转写', version='1.0.0', docs_url=None, redoc_url=None, openapi_url=None)
 
     def authorize(authorization: Annotated[str | None, Header()] = None):
@@ -44,6 +46,19 @@ def create_app(cfg=None):
         documents = info['worker'].get('documents', {})
         info['documents_unhealthy'] = not documents.get('ok', False) or time.time() - documents.get('at', 0) > 180
         return info
+
+    @app.get('/v1/realtime', dependencies=guard)
+    def realtime(room: str, since: float = 0, limit: int = Query(100, ge=1, le=1000)):
+        if room not in cfg.rooms:
+            raise HTTPException(404, 'Unknown room')
+        states = db.summary()['worker']
+        worker = states.get('realtime', {})
+        room_state = states.get('realtime:' + room, {})
+        return {'room': room, 'enabled': cfg.realtime_enabled,
+                'stale': not worker.get('ok') or room_state.get('status') != 'streaming' or time.time() - worker.get('at', 0) > 30 or time.time() - room_state.get('at', 0) > 30,
+                'worker': worker, 'source': room_state,
+                'segments': preview.list(room, since, limit),
+                'notice': '实时预览可能修订；正式文字请查看转写文档。'}
 
     @app.get('/v1/jobs', dependencies=guard)
     def jobs(room: str | None = None, limit: int = Query(100, ge=1, le=1000),

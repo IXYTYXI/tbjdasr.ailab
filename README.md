@@ -341,3 +341,32 @@ systemctl status tbjdasr-feishu-sync
 片段按时间追加，未完成片段会阻止同场次后续追加；失败片段不阻塞后续成功文字，表格标记“有失败片段”。排班移除旧日期后仍保留已创建场次并补同步迟到结果。晚到的早期片段标为“补录片段”。已结束场次只标记“已同步现有录音”，不声称采集完整。排班人员或已同步文字变化、创建结果不确定时停止该场次并要求核对；追加响应丢失后读取文档确认内容，禁止盲目重复追加。
 
 旧的 `scheduled_export.py` 是一次性已结束场次快照工具；不要与常驻服务同时归档同一场次。可用 `--once` 运行一轮，进行部署验收。
+
+## 12. 飞书实时语音预览（stream_recognize）
+
+启用 `REALTIME_ASR_ENABLED=true` 后，新增 `realtime` 进程通过内部 RTSP 持续读取 `ASR_STREAM_PATHS` 对应的直播音频，转换成 16 kHz 单声道 PCM16，以每包 200ms、递增序号调用飞书 `stream_recognize`。每 15 秒音频结束一个识别会话；中间文字用最新结果替换，不能逐响应累加。服务器实测返回的 stream_id 带租户前缀，sequence_id 是识别结果的修订序号，可滞后并重复。
+
+前提：现有 Feishu 应用开通 `speech_to_text:speech`，租户版本支持流式 ASR（免费版不支持）；租户上限 20 路，需要为其他业务留余量。沿用 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 获取 tenant token，不需要新增文档用户 OAuth 权限。
+
+```sh
+# .env 设置 REALTIME_ASR_ENABLED=true；ASR_STREAM_PATHS=live/taobao
+# 构建共享镜像后，使 media 开启内部 RTSP，api/realtime 载入新配置。
+# media 重建会短暂断流，应在停播时操作。
+docker compose build media
+docker compose up -d media api realtime
+```
+
+RTSP 的 8554 端口仅在 Docker 网络内使用，不需要在安全组开放。worker 用户沿用 `MEDIA_API_PASSWORD`，仅获选定直播间的读取权限。现有 RTMPS 推流地址和推流密钥不变。
+
+实时入口（沿用 API_KEY 鉴权）：
+
+```sh
+curl -H "Authorization: Bearer $API_KEY" \
+  'https://tbjdasr.ai.lab.yc345.tv/v1/realtime?room=live/taobao&limit=20'
+```
+
+客户端每秒查询一次，以 `segments[].id` 为键替换该段文字；`final=false` 表示可能修订，`error` 表示该段识别中断。`stale=true`、`source.status`、`worker.ok` 用于显示断流、出错或无输入，不能把旧文字当作当前直播。返回最近最多 limit 段（按时间正序），`since` 可筛选开始时间。实时预览仅保留 24 小时；start 是接收端时间，不能用于精确排班对齐。
+
+**与正式转写的区别：** 此入口用于低延迟预览，正式 TXT、飞书文档和场次表继续使用录音切片 + 文件识别的持久化流程，因此文档延迟仍取决于录音切片、文件 ASR 和同步周期。实时预览与正式结果可能有差异，也会产生额外 ASR 请求；不会把两份结果重复拼进文档。
+
+遇到 HTTP 429 或业务码 10024/99991400 时，至少冷却 60 秒，并尊重飞书给出的恢复时间；限流会在实时入口标为异常，不能视作成功。请求超时不重发同一片段；保存部分文字并尝试中止会话，然后重新读取直播。积压超过 5 秒时也重新连接，以免持续显示旧音频。断线或长时间网络拥塞可能造成预览缺口，原始录音和正式转写保留补全路径。独立进程失败不影响推流、录音及文件 ASR。

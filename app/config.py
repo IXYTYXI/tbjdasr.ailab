@@ -32,6 +32,9 @@ class Settings:
     app_secret: str = field(default_factory=lambda: os.getenv('FEISHU_APP_SECRET', ''))
     media_api_url: str = field(default_factory=lambda: os.getenv('MEDIA_API_URL', 'http://media:9997'))
     media_api_password: str = field(default_factory=lambda: os.getenv('MEDIA_API_PASSWORD', ''))
+    realtime_enabled: bool = field(default_factory=lambda: os.getenv('REALTIME_ASR_ENABLED', 'false').lower() == 'true')
+    realtime_rtsp_url: str = field(default_factory=lambda: os.getenv('MEDIA_RTSP_URL', 'rtsp://media:8554'))
+    realtime_session_seconds: int = 15
     orphan_grace: int = 10
     url_ttl: int = 7 * 86400
     poll_seconds: int = 5
@@ -47,4 +50,9 @@ class Settings:
             raise ValueError('Run init_config.py to generate API_KEY and AUDIO_SIGNING_KEY')
         if self.provider == 'company' and not self.public_url.startswith(('http://', 'https://')):
             raise ValueError('Company ASR requires PUBLIC_BASE_URL reachable from its server')
+        if self.realtime_enabled:
+            if not self.app_id or not self.app_secret or len(self.media_api_password) < 24:
+                raise ValueError('Realtime requires Feishu credentials and MEDIA_API_PASSWORD')
+            if len(self.asr_rooms or self.rooms) > 20:
+                raise ValueError('Feishu realtime supports at most 20 concurrent streams per tenant')
         self.data.mkdir(parents=True, exist_ok=True)
