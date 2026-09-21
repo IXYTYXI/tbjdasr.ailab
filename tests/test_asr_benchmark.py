@@ -47,3 +47,15 @@ def test_attach_active_older_recording_skips_pretest_audio(tmp_path,monkeypatch)
     bench.capture(tmp_path/'recordings','live/test')
     assert bench.duration==1
     assert bench.stream_queue.get()==live
+
+
+def test_recording_packets_continues_across_hourly_file_rotation(tmp_path,monkeypatch):
+    import threading
+    import benchmark_asr as module
+    a=tmp_path/'100-000000.mp4';b=tmp_path/'200-000000.mp4'
+    a.touch();b.touch()
+    monkeypatch.setattr(module,'growing_pcm',lambda source,*args:(x for x in [source.name.encode()]))
+    stream=module.recording_packets(a,threading.Event())
+    assert next(stream)==a.name.encode()
+    assert next(stream)==b.name.encode()
+    stream.close()

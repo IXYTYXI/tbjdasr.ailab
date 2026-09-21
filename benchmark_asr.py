@@ -44,6 +44,23 @@ def summarize(events, started, duration):
     return report
 
 
+def recording_packets(source, stop):
+    """Continue reading the next file when MediaMTX rotates an active recording."""
+    while not stop.is_set():
+        yield from growing_pcm(source, source.with_suffix('.ready.json'), stop)
+        deadline=time.monotonic()+15
+        following=None
+        while not stop.is_set():
+            candidates=sorted(p for p in source.parent.glob('*.mp4') if p.name>source.name)
+            if candidates:
+                following=candidates[0]
+                break
+            if time.monotonic()>=deadline:return
+            stop.wait(.2)
+        if following is None:return
+        source=following
+
+
 class Benchmark:
     def __init__(self, root, seconds=1800, wait_seconds=7200, resume_waiting=False):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
@@ -232,7 +249,7 @@ class Benchmark:
         source_start=int(source.stem.split('-')[0])+int(source.stem.split('-')[1])/1e6
         skip=round(max(0,self.armed-source_start)*16000)*2
         self.emit('capture','attached',skipped_seconds=skip/32000)
-        decoder=growing_pcm(source,source.with_suffix('.ready.json'),self.capture_stop)
+        decoder=recording_packets(source,self.capture_stop)
         def save_chunk():
             nonlocal index,offset
             if not chunks:return
