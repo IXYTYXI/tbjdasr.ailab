@@ -51,13 +51,36 @@ def contains_fragment(document, fragment):
 
 
 class LiveGateway(LarkGateway):
-    def fetch_document(self, document_id):
-        result = subprocess.run(command('docs','+fetch','--doc',document_id,'--as','user','--format','json'),
+    def fetch_document(self, document_id, *options):
+        result = subprocess.run(command('docs','+fetch','--doc',document_id,'--as','user','--format','json',*options),
                                 capture_output=True, text=True, timeout=180)
         data = json.loads(result.stdout)
         if result.returncode or not data.get('ok') or data.get('identity') != 'user':
             raise RuntimeError('无法读取飞书文档以核对写入结果')
         return data['data']['document']['content']
+
+    def append_chapter(self, document_id, personnel, fragment):
+        from export_feishu import cli
+        title = '主播：' + personnel
+        def heading():
+            content = self.fetch_document(document_id, '--scope', 'outline', '--detail', 'with-ids')
+            root = ET.fromstring('<root>'+content+'</root>')
+            matches = [n.attrib.get('id') for n in root.iter('h1') if ''.join(n.itertext()) == title]
+            if len(matches) > 1:
+                raise RuntimeError('主播章节重复，请核对文档')
+            return matches[0] if matches else None
+        anchor = heading()
+        if not anchor:
+            self.append_document(document_id, '<h1>'+escape(title)+'</h1>')
+            anchor = heading()
+        if not anchor:
+            raise RuntimeError('无法定位主播章节')
+        content = self.fetch_document(document_id, '--scope', 'section', '--start-block-id', anchor, '--detail', 'with-ids')
+        root = ET.fromstring('<root>'+content+'</root>')
+        blocks = [n for n in root.iter() if n.tag in ('h1','p') and n.attrib.get('id')]
+        if not blocks:
+            raise RuntimeError('主播章节没有可用插入位置')
+        cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',blocks[-1].attrib['id']], fragment)
 
     def update_record(self, base, table, record_id, fields):
         data = call_base(['+record-upsert','--base-token',base,'--table-id',table,'--record-id',record_id,
@@ -67,9 +90,12 @@ class LiveGateway(LarkGateway):
 
 
 class LiveSessionSync:
-    def __init__(self, directory, gateway):
+    def __init__(self, directory, gateway, grouping="session"):
         self.directory = Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
         self.gateway = gateway
+        if grouping not in ("session", "daily", "daily_person"):
+            raise ValueError("Unknown document grouping")
+        self.grouping = grouping
 
     def sync(self, slot, rows, base, table, now=None):
         now = time.time() if now is None else now
@@ -110,7 +136,12 @@ class LiveSessionSync:
                 header+='<p>本文持续追加已识别的录音。片段时间用于定位；跨班片段可能包含交班前后人员。是否已同步及转写异常请查看场次表；已同步现有录音不代表整场采集完整。</p>'
                 header+=f'<p>排班来源：<a href="{escape(slot["source"],quote=True)}">直播排班表</a>；分组：{escape(slot["group"])}。</p>'
                 save(status='create_uncertain')
-                doc=self.gateway.create_document(header)
+                if self.grouping == 'session':
+                    doc=self.gateway.create_document(header)
+                else:
+                    from daily_documents import DailyDocuments
+                    doc=DailyDocuments(self.directory,self.gateway).get(slot,self.grouping,base,table)
+                state['grouping']=self.grouping
                 save(status='ready',document_id=doc['document_id'],url=doc.get('url') or 'https://guanghe.feishu.cn/docx/'+doc['document_id'])
             fields={'场次编号':session,'场次名称':title,'直播间':slot['room'],'排班分组':slot['group'],
                     '直播人员':slot['personnel'],'排班开始':stamp(slot['since']),'排班结束':stamp(slot['until']),
@@ -142,7 +173,10 @@ class LiveSessionSync:
                     continue  # Publish later final results; earlier audio is backfilled with a label.
                 fragment=segment_xml(row,late=row['start']<state.get('last_start',0))
                 save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start']})
-                self.gateway.append_document(state['document_id'],fragment)
+                if state.get('grouping', 'session') == 'session':
+                    self.gateway.append_document(state['document_id'],fragment)
+                else:
+                    self.gateway.append_chapter(state['document_id'],slot['personnel'],fragment)
                 state['segments'][row['id']]=digest(row)
                 save(pending=None,last_start=max(state.get('last_start',0),row['start']))
             if any(r['state']=='failed' for r in rows):fields['转写状态']='有失败片段'

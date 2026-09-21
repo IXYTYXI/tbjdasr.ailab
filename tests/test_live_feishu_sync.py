@@ -104,3 +104,98 @@ def test_unchanged_session_skips_remote_calls_but_closure_updates_status(tmp_pat
     assert g.validate_table.call_count==count
     e.sync(slot(),[row()],'base','table',now=210)
     assert g.update_record.call_args.args[-1]['转写状态']=='已同步现有录音'
+
+
+def test_daily_person_shares_document_across_sessions_after_restart(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path)
+    first=LiveSessionSync(tmp_path,g,grouping='daily_person').sync(slot(),[row()], 'base','table',now=300)
+    other=dict(slot(),since=300.,until=400.)
+    second=LiveSessionSync(tmp_path,g,grouping='daily_person').sync(other,[row('b',310)], 'base','table',now=500)
+    assert first['document_id']==second['document_id']
+    assert g.create_document.call_count==1
+    assert g.create_record.call_count==2
+    assert g.append_chapter.call_count==2
+    assert '甲' in g.append_chapter.call_args.args[1]
+
+
+def test_daily_person_separates_people_and_dates(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path)
+    sync=LiveSessionSync(tmp_path,g,grouping='daily_person')
+    sync.sync(slot(),[row()], 'base','table',now=300)
+    sync.sync(dict(slot(),personnel='乙',since=300.,until=400.),[row('b',310)],'base','table',now=500)
+    sync.sync(dict(slot(),since=86500.,until=86600.),[row('c',86510)],'base','table',now=87000)
+    assert g.create_document.call_count==3
+
+
+def test_daily_document_can_include_different_people(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path)
+    sync=LiveSessionSync(tmp_path,g,grouping='daily')
+    sync.sync(slot(),[row()], 'base','table',now=300)
+    sync.sync(dict(slot(),personnel='乙',since=300.,until=400.),[row('b',310)],'base','table',now=500)
+    assert g.create_document.call_count==1
+    assert '乙' in g.append_chapter.call_args.args[1]
+
+
+def test_daily_create_uncertain_blocks_another_session(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path);g.create_document.side_effect=TimeoutError()
+    sync=LiveSessionSync(tmp_path,g,grouping='daily_person')
+    with pytest.raises(TimeoutError):sync.sync(slot(),[row()], 'base','table',now=300)
+    g.create_document.side_effect=None
+    with pytest.raises(RuntimeError,match='不确定'):
+        sync.sync(dict(slot(),since=300.,until=400.),[row('b',310)],'base','table',now=500)
+    assert g.create_document.call_count==1
+
+
+def test_midnight_shift_is_split_at_beijing_day_boundary():
+    from datetime import datetime
+    from duty_schedule import ZONE
+    from daily_documents import calendar_slots
+    start=datetime(2026,9,21,23,30,tzinfo=ZONE).timestamp()
+    parts=list(calendar_slots(dict(slot(),since=start,until=start+7200)))
+    assert [p['date'] for p in parts]==['2026-09-21','2026-09-22']
+    assert parts[0]['until']==parts[1]['since']
+    assert parts[0]['personnel']==parts[1]['personnel']=='甲'
+
+
+def test_append_chapter_uses_existing_chapter_tail_not_document_end():
+    from live_feishu_sync import LiveGateway
+    from unittest.mock import patch
+    g=LiveGateway()
+    g.fetch_document=Mock(side_effect=[
+        '<fragment><h1 id="a">主播：甲</h1><h1 id="b">主播：乙</h1></fragment>',
+        '<fragment><h1 id="a">主播：甲</h1><p id="last-a">先前文字</p></fragment>'])
+    with patch('export_feishu.cli') as call:
+        g.append_chapter('doc','甲','<p>稍后回到甲的场次</p>')
+    assert call.call_args.args[0][-2:]==['--block-id','last-a']
+
+
+def test_daily_select_assigns_cross_shift_audio_only_once(tmp_path):
+    import sqlite3
+    from feishu_sync_service import read_rows
+    db=tmp_path/'test.sqlite'
+    with sqlite3.connect(db) as c:
+        c.execute('CREATE TABLE jobs(id,room,start,duration,provider,state,text)')
+        c.execute("INSERT INTO jobs VALUES ('a','live/taobao',195,10,'feishu','succeeded','交班文字')")
+    first=read_rows(db,'live/taobao',100,200,by_start=True)
+    second=read_rows(db,'live/taobao',200,300,by_start=True)
+    assert len(first)==1 and second==[]
+
+
+def test_daily_mode_keeps_legacy_cross_midnight_receipt_without_duplicate(tmp_path):
+    from feishu_sync_service import run_once
+    from datetime import datetime
+    from duty_schedule import ZONE
+    from unittest.mock import patch
+    start=datetime(2026,9,21,23,30,tzinfo=ZONE).timestamp()
+    shift=dict(slot(),since=start,until=start+7200,date='2026-09-21')
+    r=row(start=start+10)
+    e,g=setup(tmp_path/'sessions');e.sync(shift,[r],'base','table',now=start+8000)
+    config={'room_groups':{'live/taobao':'天猫'},'schedule_url':shift['source'],'document_grouping':'daily'}
+    with patch('feishu_sync_service.read_rows',return_value=[r]):
+        result=run_once(config,'unused',tmp_path/'sessions',[shift],{'base_token':'base','table_id':'table'},g,now=start+8000)
+    assert len(result)==1
+    g.create_document.assert_called_once()

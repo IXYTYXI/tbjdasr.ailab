@@ -18,29 +18,43 @@ from export_feishu import FOLDER
 log=logging.getLogger(__name__)
 
 
-def read_rows(database,room,since,until):
+def read_rows(database,room,since,until,by_start=False):
     with sqlite3.connect('file:'+str(Path(database).resolve())+'?mode=ro',uri=True,timeout=30) as db:
         db.row_factory=sqlite3.Row
-        return [dict(row) for row in db.execute('''SELECT id,room,start,duration,provider,state,text
-            FROM jobs WHERE room=? AND start<? AND start+duration>? ORDER BY start,id''',(room,until,since))]
+        condition='start>=?' if by_start else 'start+duration>?'
+        return [dict(row) for row in db.execute('SELECT id,room,start,duration,provider,state,text '
+            'FROM jobs WHERE room=? AND start<? AND '+condition+' ORDER BY start,id',(room,until,since))]
 
 
 def run_once(config,database,directory,schedule,target,gateway,now=None):
     now=time.time() if now is None else now
-    sync=LiveSessionSync(directory,gateway)
+    grouping=config.get('document_grouping','session')
+    sync=LiveSessionSync(directory,gateway,grouping=grouping)
     days=sorted({slot['date'] for slot in schedule if slot['since']<=now})
     def key(slot):return (slot['room'],slot['since'],slot['until'])
     selected={key(slot):slot for day in days for slot in mapped_slots(schedule,config['room_groups'],day)}
+    if grouping != 'session':
+        from daily_documents import calendar_slots
+        selected={key(part):part for slot in selected.values() for part in calendar_slots(slot)}
+    legacy_keys=set()
     # Keep known sessions eligible for late ASR results even if the live roster rolls over.
     for receipt in Path(directory).glob('*.json'):
         state=json.loads(receipt.read_text())
         old=state.get('slot') or dict(state['identity'],cell='历史排班')
         if config['room_groups'].get(old['room'])==old['group']:
-            selected.setdefault(key(old),old)
+            if state.get('grouping','session') == 'session':
+                legacy_keys.add(key(old))
+                # A legacy cross-midnight session must not also create daily split copies.
+                for existing, part in list(selected.items()):
+                    if part['room']==old['room'] and old['since']<=part['since'] and part['until']<=old['until']:
+                        selected.pop(existing)
+                selected[key(old)]=old
+            else:
+                selected.setdefault(key(old),old)
     results=[]
     for slot in sorted(selected.values(),key=lambda s:(s['since'],s['room'])):
         if slot['since']>now:continue
-        rows=read_rows(database,slot['room'],slot['since'],slot['until'])
+        rows=read_rows(database,slot['room'],slot['since'],slot['until'],by_start=grouping != 'session' and key(slot) not in legacy_keys)
         if not rows:continue
         slot=dict(slot,source=config['schedule_url'])
         try:
