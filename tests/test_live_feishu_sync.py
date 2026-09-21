@@ -199,3 +199,14 @@ def test_daily_mode_keeps_legacy_cross_midnight_receipt_without_duplicate(tmp_pa
         result=run_once(config,'unused',tmp_path/'sessions',[shift],{'base_token':'base','table_id':'table'},g,now=start+8000)
     assert len(result)==1
     g.create_document.assert_called_once()
+
+
+def test_persistent_test_label_survives_new_transcript_sync(tmp_path):
+    from live_feishu_sync import atomic_json
+    import json
+    e,g=setup(tmp_path);e.sync(slot(),[row()],'base','table',now=150)
+    path=next(tmp_path.glob('*.json'));state=json.loads(path.read_text());state['test_only']=True;atomic_json(path,state)
+    e.sync(slot(),[row(),row('b',130)],'base','table',now=160)
+    fields=g.update_record.call_args.args[-1]
+    assert fields['场次名称'].startswith('【测试】')
+    assert fields['转写状态'].startswith('【测试】')

@@ -157,11 +157,13 @@ class LiveSessionSync:
                     raise ValueError('已同步文字或片段信息发生变化，请核对')
             if state['status']=='create_uncertain':
                 raise RuntimeError('创建文档结果不确定，请核对后修复回执')
-            snapshot_hash = digest({'rows':rows,'slot':slot,'ended':now >= slot['until']})
+            snapshot_hash = digest({'rows':rows,'slot':slot,'ended':now >= slot['until'],'test_only':state.get('test_only',False)})
             if state.get('snapshot_hash') == snapshot_hash and state['status'] == 'ready' and not state.get('pending'):
                 return state
             self.gateway.validate_table(base,table,schedule=True)
             title=f"{stamp(slot['since'])[:16]} {slot['group']} {slot['personnel']} 直播转写"
+            if state.get('test_only'):
+                title='【测试】'+title
             if state['status']=='new':
                 if self.gateway.find_record(base,table,session,slot['room']):
                     raise RuntimeError('场次已存在，请恢复其回执后核对，不能重复建文档')
@@ -219,6 +221,8 @@ class LiveSessionSync:
             elif any(r['state']!='succeeded' for r in rows):fields['转写状态']='等待转写'
             elif now < slot['until']:fields['转写状态']='同步中'
             else:fields['转写状态']='已同步现有录音'
+            if state.get('test_only'):
+                fields['转写状态']='【测试】'+fields['转写状态']
             if state.get('fields_digest') != digest(fields):
                 self.gateway.update_record(base,table,state['record_id'],fields)
                 save(fields_digest=digest(fields))
