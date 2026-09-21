@@ -392,3 +392,17 @@ REALTIME_ASR_ENABLED=false
 录制保存在 `data/recordings`，即使 ASR 或文档服务暂时失败也继续录制。录制文件包含 OBS 发送的音视频，空间占用取决于推流码率；现有配置不自动删除录音。失败转写沿用队列重试/失败状态，不宣称未成功片段已完整归档。
 
 同步服务读取配置，不需要新建定时任务；更新后重启 `tbjdasr-feishu-sync.service`。修改 `.env` 后重建相关容器才能生效，勿在正在直播时直接重启 media。
+
+## 14. 一次性 30 分钟 ASR 对比
+
+`benchmark_asr.py` 独立等待下一次 `live/taobao` 推流，从同一条录音解码出完全相同的 PCM，比较飞书实时、飞书每30秒片段、录完后飞书文件、录完后公司整段 ASR。测试输出为独立目录中的 `capture.wav`、各模式 TXT、`events.jsonl`、`progress.json`。不更改正式一小时录制配置，不写正式排班文档。
+
+公司 ASR 通过已有签名音频 URL 读取完整 WAV；只增加一条 `live/asr-benchmark`、`state=benchmark` 的非运行任务用于提供音频，不进入正常 worker 队列。地址签名不写日志。公司和飞书录后组在采集完成后同时启动，飞书短接口仍拆分请求。
+
+启动示例（必须使用具备生产配置、FFmpeg、共享数据目录的容器）：
+
+```sh
+python benchmark_asr.py --output /data/benchmarks/unique-run --seconds 1800 --wait-seconds 7200
+```
+
+每次使用新目录，不自动重复推送测试。下播不足30分钟会标记 incomplete；处理时间上限为采集结束后一小时。飞书几组并发可能共享额度，报告单列限流次数；成功处理音频比例不是识别准确率，字数也不是准确率。需要人工比对原始录音与各组文本才能评价准确性。
