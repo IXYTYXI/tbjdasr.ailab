@@ -6,5 +6,6 @@
   "room_groups": {
     "live/taobao": "天猫"
   },
-  "document_grouping": "daily"
+  "document_grouping": "daily",
+  "chapter_layout": "timeline"
 }

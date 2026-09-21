@@ -115,8 +115,8 @@ def test_daily_person_shares_document_across_sessions_after_restart(tmp_path):
     assert first['document_id']==second['document_id']
     assert g.create_document.call_count==1
     assert g.create_record.call_count==2
-    assert g.append_chapter.call_count==2
-    assert '甲' in g.append_chapter.call_args.args[1]
+    assert g.append_shift.call_count==2
+    assert g.append_shift.call_args.args[1]['personnel']=='甲'
 
 
 def test_daily_person_separates_people_and_dates(tmp_path):
@@ -136,7 +136,7 @@ def test_daily_document_can_include_different_people(tmp_path):
     sync.sync(slot(),[row()], 'base','table',now=300)
     sync.sync(dict(slot(),personnel='乙',since=300.,until=400.),[row('b',310)],'base','table',now=500)
     assert g.create_document.call_count==1
-    assert '乙' in g.append_chapter.call_args.args[1]
+    assert g.append_shift.call_args.args[1]['personnel']=='乙'
 
 
 def test_daily_create_uncertain_blocks_another_session(tmp_path):

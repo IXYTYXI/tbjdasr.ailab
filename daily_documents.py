@@ -24,7 +24,7 @@ class DailyDocuments:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.gateway = gateway
 
-    def get(self, slot, grouping, base, table):
+    def get(self, slot, grouping, base, table, chapter_layout="timeline"):
         from live_feishu_sync import atomic_json, digest
         from export_feishu import FOLDER
         day = datetime.fromtimestamp(slot['since'], ZONE).date().isoformat()
@@ -41,7 +41,8 @@ class DailyDocuments:
             atomic_json(path, {'status': 'create_uncertain', 'date': day})
             title = f'{day} {person + " " if person else ""}直播转写'
             xml = f'<title>{escape(title)}</title><p>按北京时间归档，主播归属依据直播排班表。每小时录制完成后转写并追加；下播不足一小时也会处理。</p>'
-            xml += '<p>同一主播的多场直播归入同一章节。交班附近的短音频可能包含前后两位主播；原始录音和时间戳保留供核对。</p>'
+            layout = '按排班时间顺序分章，换人新增章节；同一主播间隔后再次上场单独成章。' if chapter_layout == 'timeline' else '同一主播的多场直播归入同一章节。'
+            xml += '<p>'+layout+'交班附近的短音频可能包含前后两位主播；原始录音和时间戳保留供核对。</p>'
             doc = self.gateway.create_document(xml)
             state = dict(doc, status='ready', date=day)
             atomic_json(path, state)

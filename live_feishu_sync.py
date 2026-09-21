@@ -82,6 +82,36 @@ class LiveGateway(LarkGateway):
             raise RuntimeError('主播章节没有可用插入位置')
         cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',blocks[-1].attrib['id']], fragment)
 
+    def append_shift(self, document_id, slot, row, fragment):
+        from export_feishu import cli
+        from timeline_documents import chapter_title, chapter_order, insertion_anchor, segment_anchor
+        title=chapter_title(slot)
+        def outline():
+            xml=self.fetch_document(document_id,'--scope','outline','--detail','with-ids')
+            return [(n.attrib.get('id'),''.join(n.itertext())) for n in ET.fromstring('<root>'+xml+'</root>').iter('h1')]
+        headings=outline()
+        matches=[block for block,text in headings if text==title]
+        if len(matches)>1:
+            raise RuntimeError('排班章节重复，请核对文档')
+        anchor=matches[0] if matches else None
+        if not anchor:
+            later=next((block for block,text in headings if chapter_order(text) is not None and chapter_order(text)>chapter_order(title)),None)
+            heading='<h1>'+escape(title)+'</h1>'
+            if later:
+                # The API treats an end-only range as a single block. Read IDs to locate
+                # the preceding top-level block when inserting an earlier chapter.
+                xml=self.fetch_document(document_id,'--detail','with-ids')
+                before=insertion_anchor(xml,later)
+                cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',before],heading)
+            else:
+                self.append_document(document_id,heading)
+            anchor=next((block for block,text in outline() if text==title),None)
+        if not anchor:
+            raise RuntimeError('无法定位排班章节')
+        xml=self.fetch_document(document_id,'--scope','section','--start-block-id',anchor,'--detail','with-ids')
+        after=segment_anchor(xml,row['start'])
+        cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',after],fragment)
+
     def update_record(self, base, table, record_id, fields):
         data = call_base(['+record-upsert','--base-token',base,'--table-id',table,'--record-id',record_id,
                           '--json',json.dumps(fields,ensure_ascii=False)])
@@ -90,12 +120,15 @@ class LiveGateway(LarkGateway):
 
 
 class LiveSessionSync:
-    def __init__(self, directory, gateway, grouping="session"):
+    def __init__(self, directory, gateway, grouping="session", chapter_layout="timeline"):
         self.directory = Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
         self.gateway = gateway
         if grouping not in ("session", "daily", "daily_person"):
             raise ValueError("Unknown document grouping")
         self.grouping = grouping
+        if chapter_layout not in ("host", "timeline"):
+            raise ValueError("Unknown chapter layout")
+        self.chapter_layout = chapter_layout
 
     def sync(self, slot, rows, base, table, now=None):
         now = time.time() if now is None else now
@@ -140,8 +173,9 @@ class LiveSessionSync:
                     doc=self.gateway.create_document(header)
                 else:
                     from daily_documents import DailyDocuments
-                    doc=DailyDocuments(self.directory,self.gateway).get(slot,self.grouping,base,table)
+                    doc=DailyDocuments(self.directory,self.gateway).get(slot,self.grouping,base,table,chapter_layout=self.chapter_layout)
                 state['grouping']=self.grouping
+                state['chapter_layout']=self.chapter_layout
                 save(status='ready',document_id=doc['document_id'],url=doc.get('url') or 'https://guanghe.feishu.cn/docx/'+doc['document_id'])
             fields={'场次编号':session,'场次名称':title,'直播间':slot['room'],'排班分组':slot['group'],
                     '直播人员':slot['personnel'],'排班开始':stamp(slot['since']),'排班结束':stamp(slot['until']),
@@ -175,6 +209,8 @@ class LiveSessionSync:
                 save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start']})
                 if state.get('grouping', 'session') == 'session':
                     self.gateway.append_document(state['document_id'],fragment)
+                elif state.get('chapter_layout','host') == 'timeline':
+                    self.gateway.append_shift(state['document_id'],slot,row,fragment)
                 else:
                     self.gateway.append_chapter(state['document_id'],slot['personnel'],fragment)
                 state['segments'][row['id']]=digest(row)

@@ -29,7 +29,7 @@ def read_rows(database,room,since,until,by_start=False):
 def run_once(config,database,directory,schedule,target,gateway,now=None):
     now=time.time() if now is None else now
     grouping=config.get('document_grouping','session')
-    sync=LiveSessionSync(directory,gateway,grouping=grouping)
+    sync=LiveSessionSync(directory,gateway,grouping=grouping,chapter_layout=config.get('chapter_layout','timeline'))
     days=sorted({slot['date'] for slot in schedule if slot['since']<=now})
     def key(slot):return (slot['room'],slot['since'],slot['until'])
     selected={key(slot):slot for day in days for slot in mapped_slots(schedule,config['room_groups'],day)}
@@ -51,6 +51,8 @@ def run_once(config,database,directory,schedule,target,gateway,now=None):
                 selected[key(old)]=old
             else:
                 selected.setdefault(key(old),old)
+    from timeline_documents import assign_chapters
+    selected={key(s):s for s in assign_chapters(selected.values())}
     results=[]
     for slot in sorted(selected.values(),key=lambda s:(s['since'],s['room'])):
         if slot['since']>now:continue
