@@ -229,3 +229,20 @@ def test_production_cutover_isolates_old_receipts_rows_and_record_identity(tmp_p
     assert list((tmp_path/'sessions'/'archives'/'production-1').glob('*.json'))
     with patch('feishu_sync_service.read_rows',return_value=[row()]):
         assert run_once(config,'unused',tmp_path/'sessions',[shift],{'base_token':'base','table_id':'table'},g,now=160)==[]
+
+
+def test_completed_audio_in_open_shift_updates_legacy_status_without_new_audio(tmp_path):
+    import json
+    from live_feishu_sync import digest, atomic_json
+    e,g=setup(tmp_path)
+    s=slot(); rows=[row()]
+    e.sync(s,rows,'base','table',now=150)
+    path=next(tmp_path.glob('*.json'));state=json.loads(path.read_text())
+    state['record_status']='同步中'
+    state['snapshot_hash']=digest({'rows':rows,'slot':s,'ended':False,'test_only':False})
+    state['fields_digest']='old-status'
+    atomic_json(path,state);g.reset_mock()
+    result=e.sync(s,rows,'base','table',now=160)
+    assert result['record_status']=='现有录音已同步，继续录制中'
+    assert g.update_record.call_args.args[-1]['转写状态']=='现有录音已同步，继续录制中'
+    g.append_document.assert_not_called()
