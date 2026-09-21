@@ -45,9 +45,12 @@ def summarize(events, started, duration):
 
 
 class Benchmark:
-    def __init__(self, root, seconds=1800, wait_seconds=7200):
+    def __init__(self, root, seconds=1800, wait_seconds=7200, resume_waiting=False):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
-        if (self.root/'progress.json').exists():raise ValueError('Use a fresh benchmark directory')
+        if (self.root/'progress.json').exists():
+            prior=json.loads((self.root/'progress.json').read_text())
+            if not resume_waiting or prior.get('started_at') is not None or prior.get('captured_seconds',0)!=0:
+                raise ValueError('Use a fresh benchmark directory; only an unstarted wait may resume')
         self.seconds=seconds;self.wait_seconds=wait_seconds;self.armed=time.time();self.started=None
         self.duration=0;self.phase='waiting_for_stream';self.events=[];self.lock=threading.RLock()
         self.stop=threading.Event();self.capture_stop=threading.Event();self.captured=threading.Event()
@@ -217,7 +220,8 @@ class Benchmark:
             for file in sorted((Path(recordings)/room).glob('*.mp4')):
                 try:started=int(file.stem.split('-')[0])+int(file.stem.split('-')[1])/1e6
                 except (ValueError,IndexError):continue
-                if started>=self.armed-2 and file.stat().st_size>0:
+                active=not file.with_suffix('.ready.json').exists() and file.stat().st_mtime>=self.armed-2
+                if (started>=self.armed-2 or active) and file.stat().st_size>0:
                     source=file;break
             if source:break
             self.stop.wait(.5)
@@ -225,6 +229,9 @@ class Benchmark:
             self.errors.append('No new stream before wait deadline');return
         self.phase='capturing'
         chunks=bytearray();packet=bytearray();offset=0.;index=0
+        source_start=int(source.stem.split('-')[0])+int(source.stem.split('-')[1])/1e6
+        skip=round(max(0,self.armed-source_start)*16000)*2
+        self.emit('capture','attached',skipped_seconds=skip/32000)
         decoder=growing_pcm(source,source.with_suffix('.ready.json'),self.capture_stop)
         def save_chunk():
             nonlocal index,offset
@@ -237,13 +244,16 @@ class Benchmark:
                 output.setparams((1,2,16000,0,'NONE','not compressed'))
                 for block in decoder:
                     if self.stop.is_set():break
+                    if skip:
+                        drop=min(skip,len(block));skip-=drop;block=block[drop:]
+                        if not block:continue
                     if self.started is None:self.started=time.time()
                     remaining=round((self.seconds-self.duration)*32000)
                     block=block[:remaining]
                     output.writeframes(block);self.duration+=len(block)/32000
                     chunks.extend(block);packet.extend(block)
-                    if len(packet)>=32000:
-                        self.stream_queue.put(bytes(packet));packet.clear()
+                    while len(packet)>=32000:
+                        self.stream_queue.put(bytes(packet[:32000]));del packet[:32000]
                     if len(chunks)>=30*32000:save_chunk()
                     if self.duration>=self.seconds-.001:break
                 if packet:self.stream_queue.put(bytes(packet))
@@ -286,10 +296,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',required=True);parser.add_argument('--seconds',type=int,default=1800)
     parser.add_argument('--wait-seconds',type=int,default=7200)
+    parser.add_argument('--resume-waiting',action='store_true')
     parser.add_argument('--recordings',default='/data/recordings');parser.add_argument('--room',default='live/taobao')
     a=parser.parse_args()
     if not 1<=a.seconds<=3600:raise SystemExit('seconds must be between 1 and 3600')
-    bench=Benchmark(a.output,a.seconds,a.wait_seconds)
+    bench=Benchmark(a.output,a.seconds,a.wait_seconds,a.resume_waiting)
     for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,lambda *_:bench.stop.set())
     bench.run(a.recordings,a.room)
 

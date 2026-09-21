@@ -23,7 +23,7 @@ def test_empty_text_does_not_claim_first_text_and_modes_are_separate():
 def test_capture_uses_identical_audio_for_short_and_batch_modes(tmp_path,monkeypatch):
     import wave,time
     import benchmark_asr as module
-    source=tmp_path/'recordings/live/test'/f'{int(time.time())}-000000.mp4'
+    source=tmp_path/'recordings/live/test'/f'{int(time.time())+1}-000000.mp4'
     source.parent.mkdir(parents=True);source.write_bytes(b'fixture')
     pcm=b'\x01\x00'*16000
     monkeypatch.setattr(module,'growing_pcm',lambda *args:(block for block in [pcm[:6400]]*10))
@@ -35,3 +35,15 @@ def test_capture_uses_identical_audio_for_short_and_batch_modes(tmp_path,monkeyp
     assert whole==part and len(whole)==64000
     assert bench.file_queue.get()==bench.files[0]
     assert bench.stream_queue.get()+bench.stream_queue.get()==whole
+
+
+def test_attach_active_older_recording_skips_pretest_audio(tmp_path,monkeypatch):
+    import benchmark_asr as module
+    source=tmp_path/'recordings/live/test/100-000000.mp4'
+    source.parent.mkdir(parents=True);source.write_bytes(b'fixture')
+    old=b'\x01\x00'*16000;live=b'\x02\x00'*16000
+    monkeypatch.setattr(module,'growing_pcm',lambda *args:(block for block in [old,live]))
+    bench=module.Benchmark(tmp_path/'out',seconds=1,wait_seconds=1);bench.armed=101
+    bench.capture(tmp_path/'recordings','live/test')
+    assert bench.duration==1
+    assert bench.stream_queue.get()==live
