@@ -142,7 +142,10 @@ class LiveSessionSync:
                 raise ValueError('音频不属于此场次')
         if not rows:
             return {'status':'暂无音频'}
-        session = 'duty-'+hashlib.sha256(json.dumps([slot['room'],slot['since'],slot['until']]).encode()).hexdigest()[:20]
+        session_parts=[slot['room'],slot['since'],slot['until']]
+        if slot.get('archive_id'):
+            session_parts.append(slot['archive_id'])
+        session = 'duty-'+hashlib.sha256(json.dumps(session_parts).encode()).hexdigest()[:20]
         identity = {k:slot[k] for k in ('room','group','personnel','since','until','source')}
         key = digest([session,base,table,FOLDER]);path=self.directory/(key+'.json')
         with (self.directory/(key+'.lock')).open('a') as lock:

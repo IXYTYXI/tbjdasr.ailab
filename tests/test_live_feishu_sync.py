@@ -210,3 +210,22 @@ def test_persistent_test_label_survives_new_transcript_sync(tmp_path):
     fields=g.update_record.call_args.args[-1]
     assert fields['场次名称'].startswith('【测试】')
     assert fields['转写状态'].startswith('【测试】')
+
+
+def test_production_cutover_isolates_old_receipts_rows_and_record_identity(tmp_path):
+    from feishu_sync_service import run_once
+    from unittest.mock import patch
+    e,g=setup(tmp_path/'sessions')
+    old=e.sync(slot(),[row()], 'base','table',now=150)
+    g.reset_mock()
+    config={'room_groups':{'live/taobao':'天猫'},'schedule_url':slot()['source'],
+            'archive_id':'production-1','archive_since':125}
+    shift=dict(slot(),date='1970-01-01')
+    with patch('feishu_sync_service.read_rows',return_value=[row(),row('new',130)]):
+        result=run_once(config,'unused',tmp_path/'sessions',[shift],{'base_token':'base','table_id':'table'},g,now=160)
+    assert result[0]['segments']==1
+    assert g.create_record.call_count==1
+    assert g.create_record.call_args.args[-1]['场次编号']!=old['session_id']
+    assert list((tmp_path/'sessions'/'archives'/'production-1').glob('*.json'))
+    with patch('feishu_sync_service.read_rows',return_value=[row()]):
+        assert run_once(config,'unused',tmp_path/'sessions',[shift],{'base_token':'base','table_id':'table'},g,now=160)==[]

@@ -4,6 +4,8 @@ from datetime import datetime
 import fcntl
 import json
 import logging
+import math
+import re
 import signal
 import sqlite3
 from pathlib import Path
@@ -28,6 +30,16 @@ def read_rows(database,room,since,until,by_start=False):
 
 def run_once(config,database,directory,schedule,target,gateway,now=None):
     now=time.time() if now is None else now
+    archive_id=config.get('archive_id','')
+    cutoff=float(config.get('archive_since',0))
+    if not math.isfinite(cutoff) or cutoff < 0:
+        raise ValueError('Invalid archive_since')
+    if archive_id:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+',archive_id):
+            raise ValueError('Invalid archive_id')
+        directory=Path(directory)/'archives'/archive_id
+    elif cutoff:
+        raise ValueError('archive_since requires archive_id to isolate existing documents')
     grouping=config.get('document_grouping','session')
     sync=LiveSessionSync(directory,gateway,grouping=grouping,chapter_layout=config.get('chapter_layout','timeline'))
     days=sorted({slot['date'] for slot in schedule if slot['since']<=now})
@@ -55,10 +67,13 @@ def run_once(config,database,directory,schedule,target,gateway,now=None):
     selected={key(s):s for s in assign_chapters(selected.values())}
     results=[]
     for slot in sorted(selected.values(),key=lambda s:(s['since'],s['room'])):
-        if slot['since']>now:continue
+        if slot['since']>now or slot['until']<=cutoff:continue
         rows=read_rows(database,slot['room'],slot['since'],slot['until'],by_start=grouping != 'session' and key(slot) not in legacy_keys)
+        rows=[r for r in rows if r['start']>=cutoff]
         if not rows:continue
         slot=dict(slot,source=config['schedule_url'])
+        if archive_id:
+            slot['archive_id']=archive_id
         try:
             result=sync.sync(slot,rows,target['base_token'],target['table_id'],now=now)
             results.append({'room':slot['room'],'since':slot['since'],'personnel':slot['personnel'],
