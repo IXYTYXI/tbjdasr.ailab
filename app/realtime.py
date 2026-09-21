@@ -2,6 +2,7 @@
 import base64
 import re
 import uuid
+import time
 from .providers import ProviderError, checked
 
 
@@ -18,9 +19,19 @@ class StreamRecognizer:
         if not re.fullmatch(r'[A-Za-z0-9_]{16}', self.stream_id):
             raise ValueError('stream_id must contain 16 letters/digits/underscores')
         self.sequence = 0
+        self.attempted_sequence = -1
         self.closed = False
         self.text = ''
         self.result_sequence = -1
+
+    def _pace(self):
+        # fMP4 flushes whole parts at once. Do not burst those packets into ASR.
+        p = self.provider
+        interval = getattr(p, 'stream_min_interval', .21)
+        delay = getattr(p, '_stream_next_request', 0) - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        p._stream_next_request = time.monotonic() + interval
 
     def _request(self, pcm, action):
         if self.closed:
@@ -30,8 +41,11 @@ class StreamRecognizer:
                    'config': {'stream_id': self.stream_id, 'sequence_id': self.sequence,
                               'action': action, 'format': 'pcm', 'engine_type': '16k_auto'}}
         try:
+            token = p.tenant_token()
+            self._pace()
+            self.attempted_sequence = self.sequence
             response = p.client.post(p.BASE + '/speech_to_text/v1/speech/stream_recognize',
-                                     headers={'Authorization': 'Bearer ' + p.tenant_token()}, json=payload)
+                                     headers={'Authorization': 'Bearer ' + token}, json=payload)
             if response.status_code == 401:
                 p.token = ''
             try:
@@ -73,8 +87,8 @@ class StreamRecognizer:
                 self.closed = True
 
     def send(self, pcm):
-        if not pcm or len(pcm) % 2 or len(pcm) > 6400:
-            raise ValueError('Expect 1-200ms mono PCM16 at 16kHz')
+        if not pcm or len(pcm) % 2 or len(pcm) > 32000:
+            raise ValueError('Expect at most 1s mono PCM16 at 16kHz')
         return self._request(pcm, 1 if self.sequence == 0 else 0)
 
     def finish(self):
@@ -87,10 +101,11 @@ class StreamRecognizer:
         self.closed = True
         p = self.provider
         try:
+            self._pace()
             p.client.post(p.BASE + '/speech_to_text/v1/speech/stream_recognize',
                           headers={'Authorization': 'Bearer ' + p.tenant_token()},
                           json={'speech': {'speech': ''}, 'config': {
-                              'stream_id': self.stream_id, 'sequence_id': self.sequence + 1,
+                              'stream_id': self.stream_id, 'sequence_id': max(self.sequence, self.attempted_sequence + 1),
                               'action': 3, 'format': 'pcm', 'engine_type': '16k_auto'}})
         except Exception:
             pass

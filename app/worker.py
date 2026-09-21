@@ -32,7 +32,7 @@ class Worker:
         root = self.cfg.data / 'recordings'
         for marker in root.rglob('*.ready.json'):
             asset_id = hashlib.sha256(str(marker.relative_to(root)).encode()).hexdigest()
-            row = self.db.asset(asset_id, str(marker))
+            row = self.db.asset(asset_id, str(marker), segment_seconds=self.cfg.realtime_session_seconds if self.cfg.realtime_enabled and self.cfg.realtime_archive else 45)
             if row['state'] in ('done', 'failed'):
                 continue
             try:
@@ -52,7 +52,7 @@ class Worker:
                 folder.mkdir(parents=True, exist_ok=True)
                 whole = folder / 'source.wav'
                 extract_audio(source, whole)
-                parts = split_wav(whole, folder / 'parts', 45)
+                parts = split_wav(whole, folder / 'parts', row['segment_seconds'])
                 for index, (path, offset, duration) in enumerate(parts):
                     self.db.add_job(dict(id=f'{asset_id}_{index:05d}', room=info['room'],
                                         path=str(path.relative_to(self.cfg.data)), start=started + offset,
@@ -181,6 +181,7 @@ class Worker:
         try:
             while not self.stop.is_set():
                 self.db.heartbeat('asr', {'at': time.time(), 'ok': True})
+                self.db.recover_stream_jobs()
                 for job in self.db.due(rooms=self.cfg.asr_rooms or None):
                     if self.stop.is_set():
                         break

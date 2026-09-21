@@ -30,6 +30,8 @@ class Store:
             );
             CREATE TABLE IF NOT EXISTS service_state (key TEXT PRIMARY KEY,value TEXT NOT NULL);
             ''')
+            if 'segment_seconds' not in {r[1] for r in db.execute('PRAGMA table_info(assets)')}:
+                db.execute('ALTER TABLE assets ADD COLUMN segment_seconds INTEGER NOT NULL DEFAULT 45')
             if 'resume_state' not in {r[1] for r in db.execute('PRAGMA table_info(jobs)')}:
                 db.execute("ALTER TABLE jobs ADD COLUMN resume_state TEXT NOT NULL DEFAULT 'queued'")
             for name, definition in [('submitted_at', 'REAL NOT NULL DEFAULT 0'), ('request_json', "TEXT NOT NULL DEFAULT ''")]:
@@ -51,6 +53,26 @@ class Store:
             db.execute('''INSERT OR IGNORE INTO jobs
               (id,room,path,start,duration,provider,remote_id,created) VALUES (?,?,?,?,?,?,?,?)''',
               tuple(job[k] for k in ('id', 'room', 'path', 'start', 'duration', 'provider')) + (str(uuid.uuid4()), time.time()))
+
+    def reserve_stream_job(self, job, deadline):
+        with self.connect() as db:
+            row = db.execute("""INSERT OR IGNORE INTO jobs
+                (id,room,path,start,duration,provider,remote_id,created,state,next_at)
+                VALUES (?,?,?,?,?,?,?,?,'streaming',?)""",
+                tuple(job[k] for k in ('id','room','path','start','duration','provider')) +
+                (str(uuid.uuid4()),time.time(),deadline))
+            return row.rowcount == 1
+
+    def complete_stream_job(self, job_id, text, raw):
+        with self.connect() as db:
+            result = db.execute("""UPDATE jobs SET state='succeeded',text=?,raw=?,error='',errors=0
+                WHERE id=? AND state='streaming'""", (text,json.dumps(raw,ensure_ascii=False),job_id))
+            return result.rowcount == 1
+
+    def recover_stream_jobs(self, now=None):
+        with self.connect() as db:
+            db.execute("UPDATE jobs SET state='queued',next_at=0 WHERE state='streaming' AND next_at<=?",
+                       (time.time() if now is None else now,))
 
     def get(self, job_id):
         with self.connect() as db:
@@ -96,10 +118,10 @@ class Store:
                 info['jobs'][row['state']] = row['count']
         return [result[room] for room in sorted(result)]
 
-    def asset(self, asset_id, marker=None, state=None, error=''):
+    def asset(self, asset_id, marker=None, state=None, error='', segment_seconds=45):
         with self.connect() as db:
             if marker is not None:
-                db.execute('INSERT OR IGNORE INTO assets(id,marker,updated) VALUES(?,?,?)', (asset_id, marker, time.time()))
+                db.execute('INSERT OR IGNORE INTO assets(id,marker,updated,segment_seconds) VALUES(?,?,?,?)', (asset_id, marker, time.time(),segment_seconds))
             if state:
                 db.execute('UPDATE assets SET state=?,error=?,updated=? WHERE id=?', (state, error, time.time(), asset_id))
             row = db.execute('SELECT * FROM assets WHERE id=?', (asset_id,)).fetchone()

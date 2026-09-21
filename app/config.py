@@ -34,7 +34,8 @@ class Settings:
     media_api_password: str = field(default_factory=lambda: os.getenv('MEDIA_API_PASSWORD', ''))
     realtime_enabled: bool = field(default_factory=lambda: os.getenv('REALTIME_ASR_ENABLED', 'false').lower() == 'true')
     realtime_rtsp_url: str = field(default_factory=lambda: os.getenv('MEDIA_RTSP_URL', 'rtsp://media:8554'))
-    realtime_session_seconds: int = 15
+    realtime_archive: bool = field(default_factory=lambda: os.getenv('REALTIME_ARCHIVE_ENABLED', 'true').lower() == 'true')
+    realtime_session_seconds: int = 5
     orphan_grace: int = 10
     url_ttl: int = 7 * 86400
     poll_seconds: int = 5

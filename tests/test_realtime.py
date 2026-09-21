@@ -13,7 +13,7 @@ def provider(responses):
         response=responses.pop(0)
         return httpx.Response(200,json={'code':0,'data':dict(stream_id=body['config']['stream_id'],sequence_id=body['config']['sequence_id'],recognition_text=response)})
     p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(handle)))
-    p.token='test';p.expires=1e20
+    p.token='test';p.expires=1e20;p.stream_min_interval=0
     return StreamRecognizer(p,stream_id='0123456789abcdef'),calls
 
 
@@ -30,7 +30,7 @@ def test_stream_protocol_and_result_replacement():
 
 def test_invalid_pcm_rejected_before_request():
     p,calls=provider([])
-    for pcm in [b'',b'x',b'\x00'*6402]:
+    for pcm in [b'',b'x',b'\x00'*32002]:
         with pytest.raises(ValueError):p.send(pcm)
     assert calls==[]
 
@@ -40,7 +40,7 @@ def test_uncertain_request_closes_stream_instead_of_replaying():
     from app.providers import Feishu
     def fail(request):raise httpx.ReadTimeout('not logged')
     p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(fail)))
-    p.token='test';p.expires=1e20
+    p.token='test';p.expires=1e20;p.stream_min_interval=0
     stream=StreamRecognizer(p)
     with pytest.raises(httpx.ReadTimeout):stream.send(b'\x00'*6400)
     with pytest.raises(ValueError):stream.send(b'\x00'*6400)
@@ -97,7 +97,7 @@ def test_server_prefixed_id_and_lagging_result_sequence():
     def handle(request):
         body=json.loads(request.content)
         return httpx.Response(200,json={'code':0,'data':{'stream_id':'tenant_'+body['config']['stream_id'],'sequence_id':0,'recognition_text':'修订'}})
-    p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(handle)));p.token='t';p.expires=1e20
+    p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(handle)));p.token='t';p.expires=1e20;p.stream_min_interval=0
     s=StreamRecognizer(p)
     assert s.send(b'\x00'*6400)=='修订'
     assert s.send(b'\x00'*6400)=='修订'
@@ -152,7 +152,7 @@ def test_cancel_releases_remote_session_after_uncertain_packet():
         body=json.loads(request.content);calls.append(body)
         if body['config']['action']!=3:raise httpx.ReadTimeout('uncertain')
         return httpx.Response(200,json={'code':0})
-    p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(handle)));p.token='t';p.expires=1e20
+    p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(handle)));p.token='t';p.expires=1e20;p.stream_min_interval=0
     s=StreamRecognizer(p)
     with pytest.raises(httpx.ReadTimeout):s.send(b'x'*6400)
     s.abort()
@@ -164,7 +164,7 @@ def test_rate_limit_has_bounded_backoff():
     from app.realtime import StreamRecognizer, StreamRateLimit
     from app.providers import Feishu
     p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(200,json={'code':10024,'msg':'qps exceeded'}))))
-    p.token='t';p.expires=1e20
+    p.token='t';p.expires=1e20;p.stream_min_interval=0
     with pytest.raises(StreamRateLimit) as e:StreamRecognizer(p).send(b'x'*6400)
     assert e.value.retry_after>=60
 
@@ -174,7 +174,7 @@ def test_rate_limit_http_and_business_codes_respect_reset(status,code):
     from app.realtime import StreamRecognizer,StreamRateLimit
     from app.providers import Feishu
     p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(status,headers={'x-ogw-ratelimit-reset':'120'},json={'code':code}))))
-    p.token='t';p.expires=1e20
+    p.token='t';p.expires=1e20;p.stream_min_interval=0
     with pytest.raises(StreamRateLimit) as e:StreamRecognizer(p).send(b'x'*6400)
     assert e.value.retry_after==120
 
@@ -183,5 +183,31 @@ def test_legacy_rate_limit_without_reset_header():
     from app.realtime import StreamRecognizer,StreamRateLimit
     from app.providers import Feishu
     p=Feishu('a','b',httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(400,json={'code':10024}))))
-    p.token='t';p.expires=1e20
+    p.token='t';p.expires=1e20;p.stream_min_interval=0
     with pytest.raises(StreamRateLimit):StreamRecognizer(p).send(b'x'*6400)
+
+
+def test_audio_and_finish_requests_are_paced_across_sessions(monkeypatch):
+    import app.realtime as module
+    p,calls=provider(['一','一。','二'])
+    p.provider.stream_min_interval=.2
+    clock=[0.]
+    monkeypatch.setattr(module.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(module.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    p.send(b'x'*6400)
+    p.finish()
+    module.StreamRecognizer(p.provider).send(b'x'*6400)
+    assert clock[0]>=.4
+
+
+def test_abort_after_success_uses_next_sequence_without_gap():
+    p,calls=provider(['部分',''])
+    p.send(b'x'*6400)
+    p.abort()
+    assert calls[-1]['config']['sequence_id']==1
+
+
+def test_one_second_audio_packet_is_supported():
+    p,calls=provider(['一秒'])
+    assert p.send(b'x'*32000)=='一秒'
+    assert len(base64.b64decode(calls[0]['speech']['speech']))==32000

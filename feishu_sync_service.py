@@ -61,10 +61,10 @@ def main():
     parser.add_argument('--config',default='feishu_sessions.json')
     parser.add_argument('--database',default='data/state.sqlite')
     parser.add_argument('--state',default='data/feishu-sync')
-    parser.add_argument('--interval',type=int,default=30)
+    parser.add_argument('--interval',type=int,default=2)
     parser.add_argument('--once',action='store_true')
     args=parser.parse_args()
-    if args.interval<10:raise SystemExit('Interval must be at least 10 seconds')
+    if args.interval<1:raise SystemExit('Interval must be at least 1 second')
     config=json.loads(Path(args.config).read_text())
     if config['folder_token']!=FOLDER:raise SystemExit('Document folder mismatch')
     # Reject missing mappings before making any remote writes.

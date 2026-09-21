@@ -11,7 +11,7 @@ Environment=LARK_CLI_PROFILE=livestream
 Environment=LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
 Environment=LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/data/vonjan/program/tbjdasr.ailab/.sync-venv/bin/python feishu_sync_service.py --database data/state.sqlite --state data/feishu-sync --interval 30
+ExecStart=/data/vonjan/program/tbjdasr.ailab/.sync-venv/bin/python feishu_sync_service.py --database data/state.sqlite --state data/feishu-sync --interval 2
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=240

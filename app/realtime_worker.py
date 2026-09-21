@@ -149,6 +149,9 @@ class RealtimeWorker:
                 process.stdout.close()
 
     def run(self):
+        if self.cfg.realtime_archive:
+            from .recording_live import run_recording_archive
+            return run_recording_archive(self)
         self.preview.interrupt_open()
         rooms = self.cfg.asr_rooms or self.cfg.rooms
         retry_at = {}

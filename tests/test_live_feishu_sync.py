@@ -30,13 +30,14 @@ def test_incremental_restart_one_document_and_one_record(tmp_path):
     assert g.append_document.call_count==2
 
 
-def test_waits_for_missing_transcription_before_later_rows(tmp_path):
+def test_later_success_is_synced_while_earlier_waits(tmp_path):
     e,g=setup(tmp_path)
     result=e.sync(slot(),[row(),row('b',130,'queued'),row('c',150)],'base','table',now=170)
-    assert list(result['segments'])==['a']
+    assert list(result['segments'])==['a','c']
     assert g.update_record.call_args.args[-1]['转写状态']=='等待转写'
     e.sync(slot(),[row(),row('b',130),row('c',150)],'base','table',now=180)
     assert g.append_document.call_count==3
+    assert '补录片段' in g.append_document.call_args.args[1]
 
 
 def test_lost_append_response_readback_prevents_duplicate(tmp_path):
@@ -93,3 +94,13 @@ def test_runner_keeps_persisted_session_after_schedule_removed(tmp_path):
         result=run_once(config,'unused',tmp_path/'sessions',[],{'base_token':'base','table_id':'table'},g,now=300)
     assert len(result)==1 and result[0]['segments']==2
     g.create_document.assert_called_once()
+
+
+def test_unchanged_session_skips_remote_calls_but_closure_updates_status(tmp_path):
+    e,g=setup(tmp_path)
+    e.sync(slot(),[row()],'base','table',now=150)
+    count=g.validate_table.call_count
+    e.sync(slot(),[row()],'base','table',now=160)
+    assert g.validate_table.call_count==count
+    e.sync(slot(),[row()],'base','table',now=210)
+    assert g.update_record.call_args.args[-1]['转写状态']=='已同步现有录音'

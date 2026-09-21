@@ -98,6 +98,9 @@ class LiveSessionSync:
                     raise ValueError('已同步文字或片段信息发生变化，请核对')
             if state['status']=='create_uncertain':
                 raise RuntimeError('创建文档结果不确定，请核对后修复回执')
+            snapshot_hash = digest({'rows':rows,'slot':slot,'ended':now >= slot['until']})
+            if state.get('snapshot_hash') == snapshot_hash and state['status'] == 'ready' and not state.get('pending'):
+                return state
             self.gateway.validate_table(base,table,schedule=True)
             title=f"{stamp(slot['since'])[:16]} {slot['group']} {slot['personnel']} 直播转写"
             if state['status']=='new':
@@ -136,7 +139,7 @@ class LiveSessionSync:
                 if row['state']=='failed':
                     continue  # Keep the failure visible in the index; recovered audio is appended later.
                 if row['state']!='succeeded':
-                    break  # Keep pending earlier segments ahead of later successful segments.
+                    continue  # Publish later final results; earlier audio is backfilled with a label.
                 fragment=segment_xml(row,late=row['start']<state.get('last_start',0))
                 save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start']})
                 self.gateway.append_document(state['document_id'],fragment)
@@ -149,5 +152,5 @@ class LiveSessionSync:
             if state.get('fields_digest') != digest(fields):
                 self.gateway.update_record(base,table,state['record_id'],fields)
                 save(fields_digest=digest(fields))
-            save(status='ready',synced_at=now,record_status=fields['转写状态'])
+            save(status='ready',synced_at=now,record_status=fields['转写状态'],snapshot_hash=snapshot_hash)
             return state
