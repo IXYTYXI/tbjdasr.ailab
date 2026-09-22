@@ -437,7 +437,7 @@ python benchmark_asr.py --output /data/benchmarks/unique-run --seconds 1800 --wa
 清理后的音频下载将返回文件不存在，无法再使用原音频复核；清理日志保存在
 `data/media-cleanup.jsonl`，中途失败可重复执行继续清理。
 
-使用 `deploy/tbjdasr-media-cleanup.service` 和 `.timer` 可每 15 分钟自动检查一次。
+使用 `deploy/tbjdasr-media-cleanup.service` 和 `.timer` 可每天北京时间凌晨 04:00 自动检查一次；关机错过时不在开机后补跑，等下一个 04:00。
 服务使用当前 `data/feishu-production.json` 中的 `archive_id`，独立于录制服务，
 无需重启 OBS 或 MediaMTX。关闭自动清理：
 
