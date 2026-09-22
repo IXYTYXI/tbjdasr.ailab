@@ -1,0 +1,10 @@
+[Unit]
+Description=Delete completed and Feishu-synchronized live media after retention
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/data/vonjan/program/tbjdasr.ailab
+ExecStart=/data/vonjan/program/tbjdasr.ailab/.sync-venv/bin/python cleanup_media.py --sync-config data/feishu-production.json --retention-hours 24 --apply
+UMask=0077
+Nice=10

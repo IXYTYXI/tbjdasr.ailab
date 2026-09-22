@@ -415,3 +415,32 @@ python benchmark_asr.py --output /data/benchmarks/unique-run --seconds 1800 --wa
 起点应选新推流录音文件的开始时间，避免截断已有音频任务。
 部署专用配置可放在 `data/` 下，通过同步服务的 `--config` 参数指定；无需修改推流地址。
 此设置控制归档边界，不改变每小时录音完成后进行转写的时机。
+
+### 自动清理已完成的音视频
+
+`cleanup_media.py` 只处理带关闭标记且提取完成的录音，要求全部音频任务成功，
+并与当前正式批次的飞书文档、表格写入回执逐项核对内容摘要；有未决写入、缺失片段、
+失败任务或测试标记时不删除。默认在完成同步及文件最后写入后至少保留 24 小时。
+文档后来被人为删除不在本地回执检查范围内。
+
+预览（不删除）：
+
+```bash
+.sync-venv/bin/python cleanup_media.py --sync-config data/feishu-production.json
+```
+
+实际执行在上述命令后添加 `--apply`，保留时间通过 `--retention-hours` 调整。
+也可用 `--receipts <回执目录>` 显式指定归档批次，两种参数只能选一种。
+
+清理目标仅为该录音的原始 MP4 与已转写 WAV 切片。数据库文字、TXT、飞书文档、
+表格记录、回执和 `.ready.json` 均保留；测试、未处理及未知文件不会因磁盘不足被强删。
+清理后的音频下载将返回文件不存在，无法再使用原音频复核；清理日志保存在
+`data/media-cleanup.jsonl`，中途失败可重复执行继续清理。
+
+使用 `deploy/tbjdasr-media-cleanup.service` 和 `.timer` 可每 15 分钟自动检查一次。
+服务使用当前 `data/feishu-production.json` 中的 `archive_id`，独立于录制服务，
+无需重启 OBS 或 MediaMTX。关闭自动清理：
+
+```bash
+sudo systemctl disable --now tbjdasr-media-cleanup.timer
+```
