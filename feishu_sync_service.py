@@ -30,8 +30,10 @@ def read_rows(database,room,since,until,by_start=False):
 
 def same_person_note(old_name, new_name):
     """A parenthetical roster note is not a different host."""
-    return (isinstance(old_name,str) and isinstance(new_name,str) and old_name
-            and new_name.startswith(old_name+'（') and new_name.endswith('）'))
+    if not isinstance(old_name,str) or not isinstance(new_name,str) or not old_name or not new_name:
+        return False
+    return ((new_name.startswith(old_name+'（') and new_name.endswith('）'))
+            or (old_name.startswith(new_name+'（') and old_name.endswith('）')))
 
 
 def boundary_windows(slot, room_slots, lookback=60, tail=3600):

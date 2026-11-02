@@ -50,7 +50,9 @@ def cleanup(data, receipts, retention_hours=24, apply=False, now=None):
                 confirmed.setdefault(job_id,[]).append((value,s.get('synced_at',now)))
         db=sqlite3.connect('file:'+str(data/'state.sqlite')+'?mode=rw',uri=True,timeout=30)
         stack.callback(db.close);db.row_factory=sqlite3.Row
-        db.execute('BEGIN IMMEDIATE')
+        # A read snapshot keeps the eligibility checks consistent without holding
+        # the SQLite writer lock across audit fsyncs and file deletions.
+        db.execute('BEGIN')
         for asset in db.execute("SELECT * FROM assets WHERE state='done'").fetchall():
             item={'id':asset['id'],'status':'skipped'}
             report['assets'].append(item)

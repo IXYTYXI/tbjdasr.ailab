@@ -1,5 +1,7 @@
 import hashlib
 import json
+import sqlite3
+import threading
 from pathlib import Path
 import pytest
 from app.store import Store
@@ -32,6 +34,35 @@ def test_preview_apply_and_repeat_preserve_text(tmp_path):
     assert result['deleted_files']==2 and not source.exists() and not audio.exists()
     assert db.get(job['id'])['text']=='正文'
     assert cleanup(data,receipt.parent,retention_hours=0,apply=True)['deleted_files']==0
+
+
+def test_cleanup_allows_database_writes_while_deleting_files(tmp_path, monkeypatch):
+    from cleanup_media import cleanup
+    data,db,source,audio,receipt,job=fixture(tmp_path)
+    entered=threading.Event();resume=threading.Event();errors=[]
+    original_unlink=Path.unlink
+
+    def pause_at_source(path,*args,**kwargs):
+        if path==source:
+            entered.set()
+            if not resume.wait(3):
+                raise AssertionError('Cleanup did not resume')
+        return original_unlink(path,*args,**kwargs)
+
+    monkeypatch.setattr(Path,'unlink',pause_at_source)
+    def run_cleanup():
+        try:cleanup(data,receipt.parent,retention_hours=0,apply=True)
+        except BaseException as error:errors.append(error)
+
+    thread=threading.Thread(target=run_cleanup);thread.start()
+    try:
+        assert entered.wait(3)
+        with sqlite3.connect(data/'state.sqlite',timeout=.2) as conn:
+            conn.execute("INSERT OR REPLACE INTO service_state VALUES ('probe','{}')")
+    finally:
+        resume.set();thread.join(timeout=3)
+    assert not thread.is_alive() and not errors
+    assert not source.exists() and not audio.exists()
 
 
 @pytest.mark.parametrize('reason',['pending','failed','missing_receipt','uncertain','changed_text','test','active','retention','symlink','missing_job'])

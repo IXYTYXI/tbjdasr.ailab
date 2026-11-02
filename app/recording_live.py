@@ -13,6 +13,9 @@ from .realtime import StreamRecognizer, StreamRateLimit
 from .realtime_worker import pcm_packets
 
 
+RECORDING_RETRY_DELAY = 10
+
+
 def asset_identity(source, root):
     marker = source.with_suffix('.ready.json')
     asset_id = hashlib.sha256(str(marker.relative_to(root)).encode()).hexdigest()
@@ -197,18 +200,22 @@ def run_recording_archive(worker):
     worker.preview.interrupt_open()
     root = worker.cfg.data / 'recordings'
     selected = worker.cfg.asr_rooms or worker.cfg.rooms
-    handled = set()
+    active_sources = {}
+    retry_at = {}
     try:
         while not worker.stop.is_set():
             try:
                 for room, thread in list(worker.threads.items()):
                     if not thread.is_alive():
                         del worker.threads[room]
+                        source = active_sources.pop(room, None)
+                        if source is not None and source.exists() and not source.with_suffix('.ready.json').exists():
+                            retry_at[source] = time.monotonic() + RECORDING_RETRY_DELAY
                 if worker.cfg.realtime_enabled and time.monotonic() >= worker.rate_limit_until:
                     candidates = sorted(root.rglob('*.mp4'))
                     for source in candidates:
                         room = str(source.parent.relative_to(root))
-                        if room not in selected or room in worker.threads or str(source) in handled:
+                        if room not in selected or room in worker.threads or time.monotonic() < retry_at.get(source, 0):
                             continue
                         if time.time() - source.stat().st_mtime > 60:
                             continue
@@ -216,12 +223,14 @@ def run_recording_archive(worker):
                         asset = worker.db.asset(asset_id, str(marker), segment_seconds=worker.cfg.realtime_session_seconds)
                         if asset['state'] in ('done', 'failed') or marker.exists():
                             continue  # Closed files already belong to the fallback extractor.
-                        handled.add(str(source))
                         thread = threading.Thread(target=capture_recording, args=(worker, source, room, asset))
                         worker.threads[room] = thread
+                        active_sources[room] = source
                         thread.start()
-                # Bound in-memory history; completed recordings are skipped by asset state.
-                handled = {p for p in handled if Path(p).exists() and time.time() - Path(p).stat().st_mtime < 120}
+                # Closed recordings belong to the file fallback; forget stale retry timers.
+                retry_at = {p: due for p, due in retry_at.items() if p.exists()
+                            and not p.with_suffix('.ready.json').exists()
+                            and time.time() - p.stat().st_mtime < 120}
                 worker.preview.expire(time.time() - 86400)
                 worker.db.heartbeat('realtime', {'at': time.time(), 'ok': True,
                     'enabled': worker.cfg.realtime_enabled, 'archive': True})

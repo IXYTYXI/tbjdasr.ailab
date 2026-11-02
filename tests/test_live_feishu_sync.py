@@ -271,6 +271,22 @@ def test_roster_note_does_not_block_an_existing_daily_session(tmp_path):
     assert '排班' in blocked[0]['error']
 
 
+def test_removing_roster_note_keeps_syncing_existing_daily_session(tmp_path):
+    from unittest.mock import patch
+    from feishu_sync_service import run_once
+    from live_feishu_sync import LiveSessionSync
+    original=dict(slot(),personnel='蔚健（两个小时）',date='1970-01-01')
+    e,g=setup(tmp_path/'sessions')
+    LiveSessionSync(tmp_path/'sessions',g,grouping='daily').sync(original,[row()],'base','table',now=150)
+    revised=dict(original,personnel='蔚健')
+    config={'room_groups':{'live/taobao':'天猫'},'schedule_url':original['source'],'document_grouping':'daily'}
+    with patch('feishu_sync_service.read_rows',return_value=[row(),row('b',130)]):
+        result=run_once(config,'unused',tmp_path/'sessions',[revised],{'base_token':'base','table_id':'table'},g,now=160)
+    assert result[0]['status']!='同步异常'
+    assert result[0]['segments']==2
+    g.create_document.assert_called_once()
+
+
 def test_boundary_rows_cover_hour_tail_and_shift_preroll(tmp_path):
     import sqlite3
     from datetime import datetime

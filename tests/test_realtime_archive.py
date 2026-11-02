@@ -1,4 +1,6 @@
 import threading
+from types import SimpleNamespace
+import pytest
 from app.store import Store
 
 
@@ -89,6 +91,46 @@ def test_shutdown_mid_chunk_never_claims_a_short_canonical_chunk(tmp_path):
         stop.set()
     archive_packets(packets(),mock_provider(),PreviewStore(db),db,tmp_path,'live/taobao','asset',100,5,stop)
     assert db.list_jobs()==[]
+
+
+def test_failed_capture_retries_the_same_open_recording(tmp_path,monkeypatch):
+    import app.recording_live as live
+    from app.realtime_store import PreviewStore
+    source=tmp_path/'recordings/live/taobao/100-000000.mp4'
+    source.parent.mkdir(parents=True);source.write_bytes(b'growing recording')
+    db=Store(tmp_path/'state.sqlite');stop=threading.Event()
+    worker=SimpleNamespace(cfg=SimpleNamespace(data=tmp_path,asr_rooms=(),rooms=('live/taobao',),
+        realtime_enabled=True,realtime_session_seconds=5),db=db,preview=PreviewStore(db),
+        stop=stop,rate_limit_until=0,threads={})
+    attempts=[]
+    def fail_once(*_):
+        attempts.append(source)
+        if len(attempts)==2:stop.set()
+    monkeypatch.setattr(live,'capture_recording',fail_once)
+    monkeypatch.setattr(live,'RECORDING_RETRY_DELAY',.1,raising=False)
+    timeout=threading.Timer(2,stop.set);timeout.start()
+    try:live.run_recording_archive(worker)
+    finally:stop.set();timeout.cancel();timeout.join()
+    assert attempts==[source,source]
+    assert source.exists() and not source.with_suffix('.ready.json').exists()
+
+
+def test_restart_skips_finished_chunks_and_recognizes_unfinished_chunk(tmp_path):
+    from app.recording_live import archive_packets
+    from app.realtime_store import PreviewStore
+    db=Store(tmp_path/'db');preview=PreviewStore(db)
+    packets=[b'\x01\x00'*3200]*25+[b'\x02\x00'*3200]*25
+    def interrupted():
+        yield from packets[:30]
+        raise RuntimeError('reader interrupted')
+    with pytest.raises(RuntimeError,match='reader interrupted'):
+        archive_packets(interrupted(),mock_provider(),preview,db,tmp_path,'live/taobao','asset',100,5,threading.Event())
+    first=db.get('asset_00000')
+    assert first['state']=='succeeded' and db.get('asset_00001') is None
+    archive_packets(packets,mock_provider(),preview,db,tmp_path,'live/taobao','asset',100,5,threading.Event())
+    assert [r['id'] for r in db.list_jobs()]==['asset_00000','asset_00001']
+    assert db.get('asset_00000')==first
+    assert db.get('asset_00001')['state']=='succeeded'
 
 
 def test_growing_mp4_and_closed_file_have_identical_pcm(tmp_path):
