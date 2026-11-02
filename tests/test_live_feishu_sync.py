@@ -61,6 +61,69 @@ def test_uncertain_missing_content_blocks_blind_retry(tmp_path):
     assert g.append_document.call_count==1
 
 
+def test_daily_preflight_read_failure_does_not_block_next_attempt(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path)
+    sync=LiveSessionSync(tmp_path,g,grouping='daily')
+    attempts=[]
+    def append(doc,slot,audio,fragment, before_insert=None):
+        attempts.append(fragment)
+        if len(attempts)==1:
+            raise RuntimeError('文档读取返回空响应')
+        before_insert()
+    g.append_shift.side_effect=append
+    with pytest.raises(RuntimeError,match='空响应'):
+        sync.sync(slot(),[row()],'base','table',now=150)
+    result=sync.sync(slot(),[row()],'base','table',now=160)
+    assert len(attempts)==2
+    assert set(result['segments'])=={'a'}
+    assert result.get('pending') is None
+
+
+def test_daily_uncertain_insert_still_blocks_blind_resend(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path)
+    sync=LiveSessionSync(tmp_path,g,grouping='daily')
+    def append(doc,slot,audio,fragment, before_insert=None):
+        if before_insert:
+            before_insert()
+        raise TimeoutError('lost response')
+    g.append_shift.side_effect=append
+    with pytest.raises(TimeoutError):
+        sync.sync(slot(),[row()],'base','table',now=150)
+    with pytest.raises(RuntimeError,match='结果不确定'):
+        sync.sync(slot(),[row()],'base','table',now=160)
+    assert g.append_shift.call_count==1
+
+
+@pytest.mark.parametrize('returncode,expected',[(0,'空响应'),(1,'退出码 1')])
+def test_fetch_document_reports_empty_cli_response(monkeypatch,returncode,expected):
+    import subprocess
+    from live_feishu_sync import LiveGateway
+    monkeypatch.setattr(subprocess,'run',lambda *args,**kwargs:
+                        subprocess.CompletedProcess(args[0],returncode,'','private stderr'))
+    with pytest.raises(RuntimeError,match=expected) as error:
+        LiveGateway().fetch_document('doc')
+    assert 'private stderr' not in str(error.value)
+
+
+@pytest.mark.parametrize('layout',['timeline','host'])
+def test_gateway_records_pending_immediately_before_fragment_insert(monkeypatch,layout):
+    from live_feishu_sync import LiveGateway
+    from timeline_documents import chapter_title
+    gateway=LiveGateway()
+    title=chapter_title(slot()) if layout=='timeline' else '主播：甲'
+    content=f'<fragment><h1 id="heading">{title}</h1></fragment>'
+    gateway.fetch_document=Mock(side_effect=[content,content])
+    events=[]
+    monkeypatch.setattr('export_feishu.cli',lambda args,fragment: events.append('insert'))
+    if layout=='timeline':
+        gateway.append_shift('doc',slot(),row(),'<p>文字</p>',before_insert=lambda: events.append('pending'))
+    else:
+        gateway.append_chapter('doc','甲','<p>文字</p>',before_insert=lambda: events.append('pending'))
+    assert events==['pending','insert']
+
+
 def test_changed_schedule_or_transcript_needs_review(tmp_path):
     e,g=setup(tmp_path);e.sync(slot(),[row()],'base','table',now=150)
     with pytest.raises(ValueError,match='排班'):

@@ -54,12 +54,19 @@ class LiveGateway(LarkGateway):
     def fetch_document(self, document_id, *options):
         result = subprocess.run(command('docs','+fetch','--doc',document_id,'--as','user','--format','json',*options),
                                 capture_output=True, text=True, timeout=180)
-        data = json.loads(result.stdout)
-        if result.returncode or not data.get('ok') or data.get('identity') != 'user':
+        if result.returncode:
+            raise RuntimeError(f'读取飞书文档失败：CLI 退出码 {result.returncode}')
+        if not result.stdout.strip():
+            raise RuntimeError('读取飞书文档失败：CLI 返回空响应')
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError('读取飞书文档失败：CLI 返回无效 JSON') from exc
+        if not isinstance(data, dict) or not data.get('ok') or data.get('identity') != 'user':
             raise RuntimeError('无法读取飞书文档以核对写入结果')
         return data['data']['document']['content']
 
-    def append_chapter(self, document_id, personnel, fragment):
+    def append_chapter(self, document_id, personnel, fragment, before_insert=None):
         from export_feishu import cli
         title = '主播：' + personnel
         def heading():
@@ -80,9 +87,11 @@ class LiveGateway(LarkGateway):
         blocks = [n for n in root.iter() if n.tag in ('h1','p') and n.attrib.get('id')]
         if not blocks:
             raise RuntimeError('主播章节没有可用插入位置')
+        if before_insert:
+            before_insert()
         cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',blocks[-1].attrib['id']], fragment)
 
-    def append_shift(self, document_id, slot, row, fragment):
+    def append_shift(self, document_id, slot, row, fragment, before_insert=None):
         from export_feishu import cli
         from timeline_documents import chapter_title, chapter_order, insertion_anchor, segment_anchor
         title=chapter_title(slot)
@@ -110,6 +119,8 @@ class LiveGateway(LarkGateway):
             raise RuntimeError('无法定位排班章节')
         xml=self.fetch_document(document_id,'--scope','section','--start-block-id',anchor,'--detail','with-ids')
         after=segment_anchor(xml,row['start'])
+        if before_insert:
+            before_insert()
         cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',after],fragment)
 
     def update_record(self, base, table, record_id, fields):
@@ -213,13 +224,16 @@ class LiveSessionSync:
                 if row['state']!='succeeded':
                     continue  # Publish later final results; earlier audio is backfilled with a label.
                 fragment=segment_xml(row,late=row['start']<state.get('last_start',0))
-                save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start']})
+                def before_insert():
+                    # A failed outline/section read has not sent this fragment.
+                    save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start']})
                 if state.get('grouping', 'session') == 'session':
+                    before_insert()
                     self.gateway.append_document(state['document_id'],fragment)
                 elif state.get('chapter_layout','host') == 'timeline':
-                    self.gateway.append_shift(state['document_id'],slot,row,fragment)
+                    self.gateway.append_shift(state['document_id'],slot,row,fragment,before_insert=before_insert)
                 else:
-                    self.gateway.append_chapter(state['document_id'],slot['personnel'],fragment)
+                    self.gateway.append_chapter(state['document_id'],slot['personnel'],fragment,before_insert=before_insert)
                 state['segments'][row['id']]=digest(row)
                 save(pending=None,last_start=max(state.get('last_start',0),row['start']))
             if any(r['state']=='failed' for r in rows):fields['转写状态']='有失败片段'
