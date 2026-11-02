@@ -19,7 +19,10 @@ def cli(arguments, content):
     try:
         data = json.loads(result.stdout)
     except ValueError:
-        raise RuntimeError('CLI returned no valid JSON; inspect the document before retrying')
+        # Keep one diagnostic line without copying CLI output that may contain credentials.
+        stdout_state = '空' if not result.stdout.strip() else '无效 JSON'
+        stderr_state = '有输出' if result.stderr.strip() else '空'
+        raise RuntimeError(f'飞书文档操作响应无法解析（stdout={stdout_state}；stderr={stderr_state}；退出码={result.returncode}）；请核对文档')
     if result.returncode or not data.get('ok') or data.get('identity') != 'user':
         raise RuntimeError('Feishu document operation failed; check lark-cli user authorization')
     if data.get('data', {}).get('result') in ('partial_success', 'failed'):

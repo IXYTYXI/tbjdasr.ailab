@@ -39,15 +39,23 @@ def segment_xml(row, late=False):
     return f'<p><b>{title}</b></p><p>{text}</p>'
 
 
-def contains_fragment(document, fragment):
+def fragment_status(document, fragment):
     def paragraphs(xml):
         root = ET.fromstring('<root>'+xml+'</root>')
         return [''.join(p.itertext()) for p in root.iter('p')]
     try:
         actual, expected = paragraphs(document), paragraphs(fragment)
     except ET.ParseError:
-        return False
-    return bool(expected) and any(actual[i:i+len(expected)] == expected for i in range(len(actual)))
+        return 'unknown'
+    if not actual or len(expected) < 2:
+        return 'unknown'
+    timestamp = expected[0].split(' · ', 1)[0]
+    titles = [i for i, text in enumerate(actual) if text.startswith(timestamp)]
+    if not titles:
+        return 'absent'
+    if len(titles) == 1 and actual[titles[0]:titles[0]+len(expected)] == expected:
+        return 'complete'
+    return 'conflict'
 
 
 class LiveGateway(LarkGateway):
@@ -212,10 +220,16 @@ class LiveSessionSync:
             pending=state.get('pending')
             if pending:
                 content=self.gateway.fetch_document(state['document_id'])
-                if not contains_fragment(content,pending['xml']):
+                found=fragment_status(content,pending['xml'])
+                if found in ('conflict','unknown'):
                     raise RuntimeError('追加内容结果不确定，请核对文档与回执，暂不重复追加')
-                state['segments'][pending['id']]=pending['digest']
-                save(pending=None,last_start=max(state.get('last_start',0),pending['start']))
+                if found == 'complete':
+                    state['segments'][pending['id']]=pending['digest']
+                    save(pending=None,last_start=max(state.get('last_start',0),pending['start']))
+                else:
+                    if not any(r['id'] == pending['id'] and digest(r) == pending['digest'] for r in rows):
+                        raise RuntimeError('待重发片段已不在当前音频任务中，请核对回执')
+                    save(pending=None)
             for row in rows:
                 if row['id'] in state['segments']:
                     continue

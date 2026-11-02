@@ -53,11 +53,49 @@ def test_lost_append_response_readback_prevents_duplicate(tmp_path):
     assert g.append_document.call_count==1
 
 
-def test_uncertain_missing_content_blocks_blind_retry(tmp_path):
+def test_uncertain_write_with_missing_title_retries_the_fragment(tmp_path):
     e,g=setup(tmp_path);g.append_document.side_effect=TimeoutError()
     with pytest.raises(TimeoutError):e.sync(slot(),[row()],'base','table',now=150)
     g.append_document.side_effect=None
-    with pytest.raises(RuntimeError,match='核对'):e.sync(slot(),[row()],'base','table',now=160)
+    g.fetch_document.return_value='<p>文档里只有其他片段</p>'
+    result=e.sync(slot(),[row()],'base','table',now=160)
+    assert g.append_document.call_count==2
+    assert set(result['segments'])=={'a'}
+
+
+@pytest.mark.parametrize('document',[
+    lambda fragment: fragment.replace('这是一段&lt;文字&gt;','正文不一致'),
+    lambda fragment: fragment.replace(' · 10.000 秒',' · 9.000 秒'),
+    lambda fragment: fragment.split('</p>')[0]+'</p>',
+])
+def test_uncertain_write_with_title_but_wrong_body_stops_for_review(tmp_path,document):
+    from live_feishu_sync import segment_xml
+    e,g=setup(tmp_path);g.append_document.side_effect=TimeoutError()
+    with pytest.raises(TimeoutError):e.sync(slot(),[row()],'base','table',now=150)
+    g.append_document.side_effect=None
+    g.fetch_document.return_value=document(segment_xml(row()))
+    with pytest.raises(RuntimeError,match='核对'):
+        e.sync(slot(),[row()],'base','table',now=160)
+    assert g.append_document.call_count==1
+
+
+def test_uncertain_write_with_unparseable_document_does_not_resend(tmp_path):
+    e,g=setup(tmp_path);g.append_document.side_effect=TimeoutError()
+    with pytest.raises(TimeoutError):e.sync(slot(),[row()],'base','table',now=150)
+    g.append_document.side_effect=None
+    g.fetch_document.return_value='<p>未闭合'
+    with pytest.raises(RuntimeError,match='核对'):
+        e.sync(slot(),[row()],'base','table',now=160)
+    assert g.append_document.call_count==1
+
+
+def test_uncertain_write_with_empty_document_read_does_not_resend(tmp_path):
+    e,g=setup(tmp_path);g.append_document.side_effect=TimeoutError()
+    with pytest.raises(TimeoutError):e.sync(slot(),[row()],'base','table',now=150)
+    g.append_document.side_effect=None
+    g.fetch_document.return_value=''
+    with pytest.raises(RuntimeError,match='核对'):
+        e.sync(slot(),[row()],'base','table',now=160)
     assert g.append_document.call_count==1
 
 
@@ -81,7 +119,7 @@ def test_daily_preflight_read_failure_does_not_block_next_attempt(tmp_path):
 
 
 def test_daily_uncertain_insert_still_blocks_blind_resend(tmp_path):
-    from live_feishu_sync import LiveSessionSync
+    from live_feishu_sync import LiveSessionSync,segment_xml
     _,g=setup(tmp_path)
     sync=LiveSessionSync(tmp_path,g,grouping='daily')
     def append(doc,slot,audio,fragment, before_insert=None):
@@ -91,6 +129,7 @@ def test_daily_uncertain_insert_still_blocks_blind_resend(tmp_path):
     g.append_shift.side_effect=append
     with pytest.raises(TimeoutError):
         sync.sync(slot(),[row()],'base','table',now=150)
+    g.fetch_document.return_value=segment_xml(row()).replace('这是一段&lt;文字&gt;','正文不一致')
     with pytest.raises(RuntimeError,match='结果不确定'):
         sync.sync(slot(),[row()],'base','table',now=160)
     assert g.append_shift.call_count==1
@@ -105,6 +144,22 @@ def test_fetch_document_reports_empty_cli_response(monkeypatch,returncode,expect
     with pytest.raises(RuntimeError,match=expected) as error:
         LiveGateway().fetch_document('doc')
     assert 'private stderr' not in str(error.value)
+
+
+@pytest.mark.parametrize('returncode,stdout,stderr,expected',[
+    (0,'','','stdout=空；stderr=空；退出码=0'),
+    (1,'','HTTP 503\nBearer private-token','stdout=空；stderr=有输出；退出码=1'),
+    (0,'not json','','stdout=无效 JSON；stderr=空；退出码=0'),
+])
+def test_document_insert_error_has_short_safe_output_summary(monkeypatch,returncode,stdout,stderr,expected):
+    import subprocess
+    from export_feishu import cli
+    monkeypatch.setattr(subprocess,'run',lambda *args,**kwargs:
+                        subprocess.CompletedProcess(args[0],returncode,stdout,stderr))
+    with pytest.raises(RuntimeError) as error:
+        cli(['+update','--doc','doc','--command','append'],'<p>文字</p>')
+    assert expected in str(error.value)
+    assert 'private-token' not in str(error.value)
 
 
 @pytest.mark.parametrize('layout',['timeline','host'])
