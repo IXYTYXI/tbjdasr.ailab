@@ -137,8 +137,10 @@ class LiveSessionSync:
         rows = sorted(rows,key=lambda r:(r['start'],r['id']))
         if len({r['id'] for r in rows}) != len(rows):
             raise ValueError('重复的音频任务')
+        audio_since=slot.get('audio_since',slot['since'])
+        audio_until=slot.get('audio_until',slot['until'])
         for r in rows:
-            if r['room'] != slot['room'] or r['start'] >= slot['until'] or r['start']+r['duration'] <= slot['since']:
+            if r['room'] != slot['room'] or r['start'] >= audio_until or r['start']+r['duration'] <= audio_since:
                 raise ValueError('音频不属于此场次')
         if not rows:
             return {'status':'暂无音频'}

@@ -246,3 +246,63 @@ def test_completed_audio_in_open_shift_updates_legacy_status_without_new_audio(t
     assert result['record_status']=='现有录音已同步，继续录制中'
     assert g.update_record.call_args.args[-1]['转写状态']=='现有录音已同步，继续录制中'
     g.append_document.assert_not_called()
+
+
+def test_roster_note_does_not_block_an_existing_daily_session(tmp_path):
+    from datetime import datetime
+    from unittest.mock import patch
+    from duty_schedule import ZONE
+    from feishu_sync_service import run_once
+    from live_feishu_sync import LiveSessionSync
+    start=datetime(2026,10,6,20,tzinfo=ZONE).timestamp()
+    original=dict(slot(),since=start,until=start+4*3600,personnel='蔚健',date='2026-10-06')
+    e,g=setup(tmp_path/'sessions')
+    LiveSessionSync(tmp_path/'sessions',g,grouping='daily').sync(original,[row(start=start+10)],'base','table',now=start+100)
+    noted=dict(original,personnel='蔚健（两个小时）')
+    config={'room_groups':{'live/taobao':'天猫'},'schedule_url':original['source'],'document_grouping':'daily'}
+    with patch('feishu_sync_service.read_rows',return_value=[row(start=start+10),row('b',start+60)]):
+        result=run_once(config,'unused',tmp_path/'sessions',[noted],{'base_token':'base','table_id':'table'},g,now=start+200)
+    assert result[0]['status']!='同步异常'
+    assert result[0]['segments']==2
+    replaced=dict(original,personnel='李娆')
+    with patch('feishu_sync_service.read_rows',return_value=[row(start=start+10)]):
+        blocked=run_once(config,'unused',tmp_path/'sessions',[replaced],{'base_token':'base','table_id':'table'},g,now=start+300)
+    assert blocked[0]['status']=='同步异常'
+    assert '排班' in blocked[0]['error']
+
+
+def test_boundary_rows_cover_hour_tail_and_shift_preroll(tmp_path):
+    import sqlite3
+    from datetime import datetime
+    from duty_schedule import ZONE
+    from feishu_sync_service import include_boundary_rows
+    evening=datetime(2026,10,6,20,tzinfo=ZONE).timestamp()
+    midnight=datetime(2026,10,7,0,tzinfo=ZONE).timestamp()
+    morning=datetime(2026,10,7,8,tzinfo=ZONE).timestamp()
+    db=tmp_path/'jobs.sqlite'
+    with sqlite3.connect(db) as c:
+        c.execute('CREATE TABLE jobs(id,room,start,duration,provider,state,text)')
+        rows=[
+            ('asset_00000','live/taobao',evening+60,45,'company','succeeded','班内'),
+            ('asset_00001','live/taobao',midnight+15,45,'company','succeeded','跨过零点'),
+            ('stray_00000','live/taobao',midnight+30,45,'company','succeeded','无人认领'),
+            ('next_00000','live/taobao',morning-4,45,'company','succeeded','开班前'),
+        ]
+        c.executemany('INSERT INTO jobs VALUES (?,?,?,?,?,?,?)',rows)
+    slot={'room':'live/taobao','since':evening,'until':midnight}
+    room_slots=[(evening,midnight),(morning,morning+4*3600)]
+    inside=[{'id':'asset_00000','room':'live/taobao','start':evening+60,'duration':45,'provider':'company','state':'succeeded','text':'班内'}]
+    got=include_boundary_rows(db,slot,inside,room_slots,0)
+    assert {r['id'] for r in got}=={'asset_00000','asset_00001'}
+    morning_slot={'room':'live/taobao','since':morning,'until':morning+4*3600}
+    preroll=include_boundary_rows(db,morning_slot,[],room_slots,0)
+    assert [r['id'] for r in preroll]==['next_00000']
+
+
+def test_audio_coverage_can_extend_beyond_roster_without_changing_identity(tmp_path):
+    e,g=setup(tmp_path)
+    s=dict(slot(),audio_since=95.,audio_until=220.)
+    result=e.sync(s,[row('pre',96),row('inside',110),row('tail',205)],'base','table',now=300)
+    assert set(result['segments'])=={'pre','inside','tail'}
+    assert result['identity']['since']==100.
+    assert result['identity']['until']==200.

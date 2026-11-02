@@ -28,6 +28,42 @@ def read_rows(database,room,since,until,by_start=False):
             'FROM jobs WHERE room=? AND start<? AND '+condition+' ORDER BY start,id',(room,until,since))]
 
 
+def same_person_note(old_name, new_name):
+    """A parenthetical roster note is not a different host."""
+    return (isinstance(old_name,str) and isinstance(new_name,str) and old_name
+            and new_name.startswith(old_name+'（') and new_name.endswith('）'))
+
+
+def boundary_windows(slot, room_slots, lookback=60, tail=3600):
+    """Unscheduled audio touching a shift: a short pre-roll, and the hourly-file tail before the next host."""
+    ordered=sorted(room_slots)
+    prev_until=max((until for since,until in ordered if until<=slot['since']), default=None)
+    next_since=min((since for since,until in ordered if since>=slot['until']), default=None)
+    windows=[]
+    if prev_until is not None:
+        start=max(prev_until, slot['since']-lookback)
+        if start<slot['since']:
+            windows.append((start, slot['since'], False))
+    tail_end=slot['until']+tail if next_since is None else min(next_since, slot['until']+tail)
+    if tail_end>slot['until']:
+        windows.append((slot['until'], tail_end, True))
+    return windows
+
+
+def include_boundary_rows(database, slot, rows, room_slots, cutoff):
+    seen={r['id'] for r in rows}
+    assets={r['id'].split('_',1)[0] for r in rows}
+    extra=[]
+    for start,end,is_tail in boundary_windows(slot, room_slots):
+        found=[r for r in read_rows(database, slot['room'], start, end, by_start=True)
+               if r['start']>=cutoff and r['id'] not in seen]
+        if is_tail:
+            found=[r for r in found if r['id'].split('_',1)[0] in assets]
+        extra.extend(found)
+        seen.update(r['id'] for r in found)
+    return rows+extra
+
+
 def run_once(config,database,directory,schedule,target,gateway,now=None):
     now=time.time() if now is None else now
     archive_id=config.get('archive_id','')
@@ -62,16 +98,28 @@ def run_once(config,database,directory,schedule,target,gateway,now=None):
                         selected.pop(existing)
                 selected[key(old)]=old
             else:
-                selected.setdefault(key(old),old)
+                current=selected.get(key(old))
+                if current and same_person_note(old.get('personnel'), current.get('personnel')):
+                    selected[key(old)]=old
+                else:
+                    selected.setdefault(key(old),old)
     from timeline_documents import assign_chapters
     selected={key(s):s for s in assign_chapters(selected.values())}
     results=[]
     for slot in sorted(selected.values(),key=lambda s:(s['since'],s['room'])):
         if slot['since']>now or slot['until']<=cutoff:continue
-        rows=read_rows(database,slot['room'],slot['since'],slot['until'],by_start=grouping != 'session' and key(slot) not in legacy_keys)
+        by_start=grouping != 'session' and key(slot) not in legacy_keys
+        rows=read_rows(database,slot['room'],slot['since'],slot['until'],by_start=by_start)
         rows=[r for r in rows if r['start']>=cutoff]
+        if by_start:
+            room_slots=[(s['since'],s['until']) for s in selected.values() if s['room']==slot['room']]
+            rows=include_boundary_rows(database,slot,rows,room_slots,cutoff)
         if not rows:continue
         slot=dict(slot,source=config['schedule_url'])
+        # Keep the roster boundary unchanged, but let the sync validator accept
+        # the short pre-roll/hourly-file tail explicitly assigned above.
+        slot['audio_since']=min(slot['since'],min(r['start'] for r in rows))
+        slot['audio_until']=max(slot['until'],max(r['start']+r['duration'] for r in rows))
         if archive_id:
             slot['archive_id']=archive_id
         try:
