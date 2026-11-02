@@ -36,6 +36,27 @@ def same_person_note(old_name, new_name):
             or (old_name.startswith(new_name+'（') and old_name.endswith('）')))
 
 
+def _on_the_hour(moment, hour):
+    value=datetime.fromtimestamp(moment, ZONE)
+    return (value.hour, value.minute, value.second, value.microsecond)==(hour, 0, 0, 0)
+
+
+def overnight_gap_windows(slot):
+    """Unscheduled audio between a midnight handoff and the morning shift.
+
+    From 00:00 up to 03:00 belongs to the shift that ends at 00:00.
+    From 03:00 up to 08:00 belongs to the shift that starts at 08:00.
+    """
+    windows=[]
+    if _on_the_hour(slot['until'], 0):
+        end=datetime.fromtimestamp(slot['until'], ZONE).replace(hour=3)
+        windows.append((slot['until'], end.timestamp()))
+    if _on_the_hour(slot['since'], 8):
+        start=datetime.fromtimestamp(slot['since'], ZONE).replace(hour=3)
+        windows.append((start.timestamp(), slot['since']))
+    return windows
+
+
 def boundary_windows(slot, room_slots, lookback=60, tail=3600):
     """Unscheduled audio touching a shift: a short pre-roll, and the hourly-file tail before the next host."""
     ordered=sorted(room_slots)
@@ -61,6 +82,12 @@ def include_boundary_rows(database, slot, rows, room_slots, cutoff):
                if r['start']>=cutoff and r['id'] not in seen]
         if is_tail:
             found=[r for r in found if r['id'].split('_',1)[0] in assets]
+        extra.extend(found)
+        seen.update(r['id'] for r in found)
+    for start,end in overnight_gap_windows(slot):
+        found=[r for r in read_rows(database, slot['room'], start, end, by_start=True)
+               if r['start']>=cutoff and r['id'] not in seen
+               and not any(since<=r['start']<until for since,until in room_slots)]
         extra.extend(found)
         seen.update(r['id'] for r in found)
     return rows+extra

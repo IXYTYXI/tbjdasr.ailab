@@ -536,7 +536,10 @@ def test_boundary_rows_cover_hour_tail_and_shift_preroll(tmp_path):
         rows=[
             ('asset_00000','live/taobao',evening+60,45,'company','succeeded','班内'),
             ('asset_00001','live/taobao',midnight+15,45,'company','succeeded','跨过零点'),
-            ('stray_00000','live/taobao',midnight+30,45,'company','succeeded','无人认领'),
+            ('after_midnight','live/taobao',midnight+30,45,'company','succeeded','零点后归上一班'),
+            ('before_three','live/taobao',midnight+2*3600,45,'company','succeeded','三点前'),
+            ('after_three','live/taobao',midnight+4*3600,45,'company','succeeded','三点后'),
+            ('before_eight','live/taobao',morning-11*60,45,'company','succeeded','八点前'),
             ('next_00000','live/taobao',morning-4,45,'company','succeeded','开班前'),
         ]
         c.executemany('INSERT INTO jobs VALUES (?,?,?,?,?,?,?)',rows)
@@ -544,10 +547,10 @@ def test_boundary_rows_cover_hour_tail_and_shift_preroll(tmp_path):
     room_slots=[(evening,midnight),(morning,morning+4*3600)]
     inside=[{'id':'asset_00000','room':'live/taobao','start':evening+60,'duration':45,'provider':'company','state':'succeeded','text':'班内'}]
     got=include_boundary_rows(db,slot,inside,room_slots,0)
-    assert {r['id'] for r in got}=={'asset_00000','asset_00001'}
+    assert {r['id'] for r in got}=={'asset_00000','asset_00001','after_midnight','before_three'}
     morning_slot={'room':'live/taobao','since':morning,'until':morning+4*3600}
     preroll=include_boundary_rows(db,morning_slot,[],room_slots,0)
-    assert [r['id'] for r in preroll]==['next_00000']
+    assert {r['id'] for r in preroll}=={'after_three','before_eight','next_00000'}
 
 
 def test_audio_coverage_can_extend_beyond_roster_without_changing_identity(tmp_path):
