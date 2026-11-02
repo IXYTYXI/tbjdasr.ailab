@@ -53,14 +53,75 @@ def test_lost_append_response_readback_prevents_duplicate(tmp_path):
     assert g.append_document.call_count==1
 
 
-def test_uncertain_write_with_missing_title_retries_the_fragment(tmp_path):
+def test_uncertain_write_with_stale_missing_title_never_blindly_resends(tmp_path):
+    from live_feishu_sync import segment_xml
     e,g=setup(tmp_path);g.append_document.side_effect=TimeoutError()
     with pytest.raises(TimeoutError):e.sync(slot(),[row()],'base','table',now=150)
     g.append_document.side_effect=None
     g.fetch_document.return_value='<p>文档里只有其他片段</p>'
-    result=e.sync(slot(),[row()],'base','table',now=160)
-    assert g.append_document.call_count==2
+    with pytest.raises(RuntimeError,match='结果不确定'):
+        e.sync(slot(),[row()],'base','table',now=160)
+    assert g.append_document.call_count==1
+    g.fetch_document.return_value=segment_xml(row())
+    result=e.sync(slot(),[row()],'base','table',now=170)
     assert set(result['segments'])=={'a'}
+    assert g.append_document.call_count==1
+
+
+def test_fragment_identity_distinguishes_same_time_in_different_rooms():
+    from live_feishu_sync import fragment_status, segment_xml
+    other=dict(row(),room='live/other')
+    assert fragment_status(segment_xml(other),segment_xml(row()))=='absent'
+
+
+def test_fragment_identity_detects_same_job_with_changed_timestamp():
+    from live_feishu_sync import fragment_status, segment_xml
+    moved=dict(row(),start=120)
+    assert fragment_status(segment_xml(moved),segment_xml(row()))=='conflict'
+
+
+def test_base_preflight_failure_does_not_leave_record_pending(tmp_path):
+    import json
+    e,g=setup(tmp_path)
+    g.find_record.side_effect=[None, RuntimeError('lookup failed'), None]
+    with pytest.raises(RuntimeError,match='lookup failed'):
+        e.sync(slot(),[row()],'base','table',now=150)
+    state=json.loads(next(tmp_path.glob('*.json')).read_text())
+    assert not state.get('record_pending')
+    assert g.create_record.call_count==0
+    result=e.sync(slot(),[row()],'base','table',now=160)
+    assert result['record_id']=='rec1'
+
+
+def test_legacy_folder_receipt_is_reused_after_folder_change(tmp_path,monkeypatch):
+    import live_feishu_sync
+    from export_feishu import LEGACY_FOLDER
+    e,g=setup(tmp_path)
+    monkeypatch.setattr(live_feishu_sync,'FOLDER',LEGACY_FOLDER)
+    first=e.sync(slot(),[row()],'base','table',now=150)
+    monkeypatch.undo()
+    second=e.sync(slot(),[row(),row('b',130)],'base','table',now=160)
+    assert first['document_id']==second['document_id']
+    g.create_document.assert_called_once()
+    g.create_record.assert_called_once()
+
+
+@pytest.mark.parametrize('layout',['timeline','host'])
+def test_new_chapter_and_first_fragment_are_one_mutation(monkeypatch,layout):
+    from live_feishu_sync import LiveGateway
+    gateway=LiveGateway()
+    gateway.fetch_document=Mock(return_value='<fragment/>')
+    events=[]
+    monkeypatch.setattr('export_feishu.cli',lambda args,content: events.append((args,content)))
+    gateway.append_document=Mock(side_effect=lambda doc,content: events.append((['append'],content)))
+    callback=lambda: events.append('pending')
+    if layout=='timeline':
+        gateway.append_shift('doc',slot(),row(),'<p>fragment</p>',before_insert=callback)
+    else:
+        gateway.append_chapter('doc','甲','<p>fragment</p>',before_insert=callback)
+    assert events[0]=='pending'
+    assert len(events)==2
+    assert '<h1>' in events[1][1] and '<p>fragment</p>' in events[1][1]
 
 
 @pytest.mark.parametrize('document',[
@@ -224,6 +285,49 @@ def test_unchanged_session_skips_remote_calls_but_closure_updates_status(tmp_pat
     assert g.update_record.call_args.args[-1]['转写状态']=='已同步现有录音'
 
 
+def test_periodic_audit_detects_removed_remote_fragment(tmp_path):
+    e,g=setup(tmp_path)
+    ongoing=dict(slot(),until=100000.)
+    e.sync(ongoing,[row()],'base','table',now=150)
+    g.fetch_document.return_value='<p>只剩其他内容</p>'
+    with pytest.raises(RuntimeError,match='核对'):
+        e.sync(ongoing,[row()],'base','table',now=22000)
+    assert g.fetch_document.call_count==1
+    assert g.append_document.call_count==1
+
+
+def test_periodic_audit_accepts_legacy_fragment(tmp_path):
+    import re
+    from live_feishu_sync import segment_xml
+    e,g=setup(tmp_path)
+    ongoing=dict(slot(),until=100000.)
+    e.sync(ongoing,[row()],'base','table',now=150)
+    g.fetch_document.return_value=re.sub(r' · 片段ID：[0-9a-f]{20}', '', segment_xml(row()))
+    result=e.sync(ongoing,[row()],'base','table',now=22000)
+    assert result['status']=='ready'
+    assert g.fetch_document.call_count==1
+
+
+def test_session_retry_backoff_skips_repeated_remote_attempts(tmp_path,monkeypatch):
+    from feishu_sync_service import run_once
+    import feishu_sync_service
+    _,g=setup(tmp_path/'sessions')
+    shift=dict(slot(),date='1970-01-01')
+    monkeypatch.setattr(feishu_sync_service,'mapped_slots',lambda *args:[shift])
+    monkeypatch.setattr(feishu_sync_service,'read_rows',lambda *args,**kwargs:[row()])
+    g.append_document.side_effect=TimeoutError()
+    config={'room_groups':{'live/taobao':'天猫'},'schedule_url':slot()['source']}
+    target={'base_token':'base','table_id':'table'}
+    retry={}
+    first=run_once(config,'unused',tmp_path/'sessions',[shift],target,g,now=150,retry_state=retry)
+    assert first[0]['status']=='同步异常'
+    count=g.validate_table.call_count
+    second=run_once(config,'unused',tmp_path/'sessions',[shift],target,g,now=151,retry_state=retry)
+    assert second[0]['status']=='同步异常'
+    assert second[0]['retry_at']>151
+    assert g.validate_table.call_count==count
+
+
 def test_daily_person_shares_document_across_sessions_after_restart(tmp_path):
     from live_feishu_sync import LiveSessionSync
     _,g=setup(tmp_path)
@@ -235,6 +339,19 @@ def test_daily_person_shares_document_across_sessions_after_restart(tmp_path):
     assert g.create_record.call_count==2
     assert g.append_shift.call_count==2
     assert g.append_shift.call_args.args[1]['personnel']=='甲'
+
+
+def test_daily_document_legacy_folder_receipt_is_reused(tmp_path,monkeypatch):
+    from daily_documents import DailyDocuments
+    from export_feishu import LEGACY_FOLDER
+    import export_feishu
+    _,g=setup(tmp_path)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(export_feishu,'FOLDER',LEGACY_FOLDER)
+        old=DailyDocuments(tmp_path,g).get(slot(),'daily','base','table')
+    current=DailyDocuments(tmp_path,g).get(slot(),'daily','base','table')
+    assert current['document_id']==old['document_id']
+    g.create_document.assert_called_once()
 
 
 def test_daily_person_separates_people_and_dates(tmp_path):

@@ -66,7 +66,7 @@ def include_boundary_rows(database, slot, rows, room_slots, cutoff):
     return rows+extra
 
 
-def run_once(config,database,directory,schedule,target,gateway,now=None):
+def run_once(config,database,directory,schedule,target,gateway,now=None,retry_state=None):
     now=time.time() if now is None else now
     archive_id=config.get('archive_id','')
     cutoff=float(config.get('archive_since',0))
@@ -110,6 +110,12 @@ def run_once(config,database,directory,schedule,target,gateway,now=None):
     results=[]
     for slot in sorted(selected.values(),key=lambda s:(s['since'],s['room'])):
         if slot['since']>now or slot['until']<=cutoff:continue
+        retry_key=(slot['room'],slot['since'],slot['until'])
+        delayed=retry_state.get(retry_key) if retry_state is not None else None
+        if delayed and now < delayed['retry_at']:
+            results.append({'room':slot['room'],'since':slot['since'],'status':'同步异常',
+                            'error':delayed['error'],'retry_at':delayed['retry_at']})
+            continue
         by_start=grouping != 'session' and key(slot) not in legacy_keys
         rows=read_rows(database,slot['room'],slot['since'],slot['until'],by_start=by_start)
         rows=[r for r in rows if r['start']>=cutoff]
@@ -126,14 +132,26 @@ def run_once(config,database,directory,schedule,target,gateway,now=None):
             slot['archive_id']=archive_id
         try:
             result=sync.sync(slot,rows,target['base_token'],target['table_id'],now=now)
+            if retry_state is not None:
+                retry_state.pop(retry_key,None)
             results.append({'room':slot['room'],'since':slot['since'],'personnel':slot['personnel'],
                             'status':result.get('record_status',result['status']),
                             'url':result.get('url'),'segments':len(result.get('segments',{}))})
         except Exception as error:
             # CLI exceptions intentionally contain no raw credentials or responses.
-            log.error('Session sync failed: %s %s %s',slot['room'],slot['since'],type(error).__name__)
+            message=str(error) if isinstance(error,(ValueError,RuntimeError)) else type(error).__name__
+            if retry_state is not None:
+                failures=(delayed or {}).get('failures',0)+1
+                retry_at=now+min(300,2**min(failures,8))
+                retry_state[retry_key]={'failures':failures,'retry_at':retry_at,'error':message}
+            if delayed is None or delayed.get('error') != message or now-delayed.get('logged_at',0)>=300:
+                log.error('Session sync failed: %s %s %s',slot['room'],slot['since'],type(error).__name__)
+                if retry_state is not None:
+                    retry_state[retry_key]['logged_at']=now
+            elif retry_state is not None:
+                retry_state[retry_key]['logged_at']=delayed.get('logged_at',now)
             results.append({'room':slot['room'],'since':slot['since'],'status':'同步异常',
-                            'error':str(error) if isinstance(error,(ValueError,RuntimeError)) else type(error).__name__})
+                            'error':message,**({'retry_at':retry_at} if retry_state is not None else {})})
     return results
 
 
@@ -155,7 +173,8 @@ def main():
     for sig in (signal.SIGTERM,signal.SIGINT):signal.signal(sig,lambda *_:stop.set())
     with (root/'service.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        schedule=None;refreshed=0;target=None;gateway=LiveGateway()
+        schedule=None;refreshed=0;target=None;gateway=LiveGateway();retry_state={}
+        last_health_signature=None;last_health_print=0
         while not stop.is_set():
             started=time.time()
             try:
@@ -163,14 +182,17 @@ def main():
                     schedule=read_schedule(config);refreshed=started
                     target=call_base(['+url-resolve','--url',config['base_url']])
                     gateway.validate_table(target['base_token'],target['table_id'],schedule=True)
-                results=run_once(config,args.database,root/'sessions',schedule,target,gateway)
+                results=run_once(config,args.database,root/'sessions',schedule,target,gateway,retry_state=retry_state)
                 errors=sum(r['status']=='同步异常' for r in results)
                 health={'at':time.time(),'ok':errors==0,'errors':errors,'sessions':results,'schedule_refreshed_at':refreshed}
             except Exception as error:
                 log.error('Feishu sync loop failed: %s',type(error).__name__)
                 health={'at':time.time(),'ok':False,'error':str(error) if isinstance(error,(ValueError,RuntimeError)) else type(error).__name__}
             atomic_json(root/'health.json',health)
-            print(json.dumps(health,ensure_ascii=False),flush=True)
+            signature=json.dumps({k:v for k,v in health.items() if k!='at'},ensure_ascii=False,sort_keys=True)
+            if signature!=last_health_signature or started-last_health_print>=60:
+                print(json.dumps(health,ensure_ascii=False),flush=True)
+                last_health_signature=signature;last_health_print=started
             if args.once:
                 if not health['ok']:raise SystemExit(1)
                 return

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from app.documents import render_xml
-from export_feishu import FOLDER, cli
+from export_feishu import FOLDER, LEGACY_FOLDER, cli
 
 FIELDS = {'场次编号': 'text', '场次名称': 'text', '直播间': 'text',
           '开始时间': 'datetime', '结束时间': 'datetime', '转写状态': 'text', '转写文档': 'text'}
@@ -69,8 +69,8 @@ class LarkGateway:
             raise RuntimeError('无法确认表格是否已有此场次，停止创建')
         return records[0] if records else None
 
-    def create_record(self, base, table, fields):
-        if self.find_record(base, table, fields['场次编号'], fields['直播间']):
+    def create_record(self, base, table, fields, prechecked=False):
+        if not prechecked and self.find_record(base, table, fields['场次编号'], fields['直播间']):
             raise RuntimeError('表格已有此场次，请核对已有记录与本地回执')
         data = call_base(['+record-upsert', '--base-token', base, '--table-id', table,
                           '--json', json.dumps(fields, ensure_ascii=False)])
@@ -107,11 +107,18 @@ class SessionExporter:
             raise ValueError('转写片段不属于所选场次')
         rows = sorted(rows, key=lambda r: (r['start'], r['id']))
         snapshot = [{k: r[k] for k in ('id', 'room', 'start', 'duration', 'provider', 'state', 'text')} for r in rows]
-        spec = dict(session_id=session_id, room=room, since=float(since), until=float(until), title=title,
-                    base=base, table=table, folder=FOLDER, rows=snapshot, schedule=schedule)
-        digest = hashlib.sha256(json.dumps(spec, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         key = hashlib.sha256(json.dumps([session_id, room, base, table, FOLDER]).encode()).hexdigest()
         path = self.directory / (key + '.json')
+        legacy_key = hashlib.sha256(json.dumps([session_id, room, base, table, LEGACY_FOLDER]).encode()).hexdigest()
+        legacy_path = self.directory / (legacy_key + '.json')
+        if path.exists() and legacy_path.exists():
+            raise RuntimeError('新旧文件夹均存在此归档回执，请核对后继续')
+        folder = LEGACY_FOLDER if legacy_path.exists() else FOLDER
+        if folder == LEGACY_FOLDER:
+            key,path=legacy_key,legacy_path
+        spec = dict(session_id=session_id, room=room, since=float(since), until=float(until), title=title,
+                    base=base, table=table, folder=folder, rows=snapshot, schedule=schedule)
+        digest = hashlib.sha256(json.dumps(spec, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         with (self.directory / (key + '.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             state = json.loads(path.read_text()) if path.exists() else {'status': 'new', 'digest': digest, 'session_id': session_id, 'room': room}
@@ -160,8 +167,10 @@ class SessionExporter:
                     fields.update({'直播人员': schedule['personnel'], '排班分组': schedule['group'],
                                    '排班开始': stamp(since), '排班结束': stamp(until),
                                    '排班来源': schedule['source'], '排班单元格': schedule['cell']})
+                if self.gateway.find_record(base, table, session_id, room):
+                    raise RuntimeError('表格已有此场次，请核对已有记录与本地回执')
                 save('record_uncertain')
-                record_id = self.gateway.create_record(base, table, fields)
+                record_id = self.gateway.create_record(base, table, fields, prechecked=True)
                 save('done', record_id=record_id, base_token=base, table_id=table)
             return state
 

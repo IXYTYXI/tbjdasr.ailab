@@ -26,11 +26,17 @@ class DailyDocuments:
 
     def get(self, slot, grouping, base, table, chapter_layout="timeline"):
         from live_feishu_sync import atomic_json, digest
-        from export_feishu import FOLDER
+        from export_feishu import FOLDER, LEGACY_FOLDER
         day = datetime.fromtimestamp(slot['since'], ZONE).date().isoformat()
         person = slot['personnel'] if grouping == 'daily_person' else ''
         key = digest([grouping, day, person, base, table, FOLDER])
         path = self.directory / (key + '.json')
+        legacy_key = digest([grouping, day, person, base, table, LEGACY_FOLDER])
+        legacy_path = self.directory / (legacy_key + '.json')
+        if path.exists() and legacy_path.exists():
+            raise RuntimeError('新旧文件夹均存在每日文档回执，请核对后继续')
+        if legacy_path.exists():
+            key,path=legacy_key,legacy_path
         with (self.directory / (key + '.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if path.exists():

@@ -10,7 +10,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from duty_schedule import ZONE
-from export_feishu import FOLDER
+from export_feishu import FOLDER, LEGACY_FOLDER
 from session_export import LarkGateway, call_base
 import subprocess
 
@@ -32,9 +32,10 @@ def atomic_json(path, data):
 
 
 def segment_xml(row, late=False):
-    # The full timestamp is both useful to readers and unique in the selected source.
+    # The job identity distinguishes simultaneous segments from different rooms.
     title = datetime.fromtimestamp(row['start'], ZONE).isoformat(timespec='microseconds')
     title += f" · {row['duration']:.3f} 秒" + (' · 补录片段' if late else '')
+    title += ' · 片段ID：' + digest([row['room'], row['id']])[:20]
     text = escape(row['text'] or '（未识别到文字）').replace('\n','<br/>')
     return f'<p><b>{title}</b></p><p>{text}</p>'
 
@@ -50,12 +51,30 @@ def fragment_status(document, fragment):
     if not actual or len(expected) < 2:
         return 'unknown'
     timestamp = expected[0].split(' · ', 1)[0]
-    titles = [i for i, text in enumerate(actual) if text.startswith(timestamp)]
+    marker = expected[0].split(' · 片段ID：', 1)[-1] if ' · 片段ID：' in expected[0] else None
+    timestamp_titles = [i for i, text in enumerate(actual) if text.startswith(timestamp)]
+    titles = ([i for i, text in enumerate(actual) if ' · 片段ID：' + marker in text]
+              if marker else timestamp_titles)
     if not titles:
+        if marker and any(' · 片段ID：' not in actual[i] for i in timestamp_titles):
+            return 'conflict'
         return 'absent'
     if len(titles) == 1 and actual[titles[0]:titles[0]+len(expected)] == expected:
         return 'complete'
     return 'conflict'
+
+
+def audit_fragments(document, rows, segments):
+    by_id = {row['id']: row for row in rows}
+    for job_id in segments:
+        row = by_id.get(job_id)
+        if row is None:
+            raise RuntimeError('已同步片段不在当前音频任务中，请核对任务与回执')
+        marker = ' · 片段ID：' + digest([row['room'], row['id']])[:20]
+        variants = [segment_xml(row, late=late) for late in (False, True)]
+        variants += [fragment.replace(marker, '') for fragment in variants]
+        if not any(fragment_status(document, fragment) == 'complete' for fragment in variants):
+            raise RuntimeError('已同步片段在飞书文档中缺失或不一致，请核对文档与回执')
 
 
 class LiveGateway(LarkGateway):
@@ -86,10 +105,10 @@ class LiveGateway(LarkGateway):
             return matches[0] if matches else None
         anchor = heading()
         if not anchor:
-            self.append_document(document_id, '<h1>'+escape(title)+'</h1>')
-            anchor = heading()
-        if not anchor:
-            raise RuntimeError('无法定位主播章节')
+            if before_insert:
+                before_insert()
+            self.append_document(document_id, '<h1>'+escape(title)+'</h1>'+fragment)
+            return
         content = self.fetch_document(document_id, '--scope', 'section', '--start-block-id', anchor, '--detail', 'with-ids')
         root = ET.fromstring('<root>'+content+'</root>')
         blocks = [n for n in root.iter() if n.tag in ('h1','p') and n.attrib.get('id')]
@@ -113,18 +132,20 @@ class LiveGateway(LarkGateway):
         anchor=matches[0] if matches else None
         if not anchor:
             later=next((block for block,text in headings if chapter_order(text) is not None and chapter_order(text)>chapter_order(title)),None)
-            heading='<h1>'+escape(title)+'</h1>'
+            insertion='<h1>'+escape(title)+'</h1>'+fragment
             if later:
                 # The API treats an end-only range as a single block. Read IDs to locate
                 # the preceding top-level block when inserting an earlier chapter.
                 xml=self.fetch_document(document_id,'--detail','with-ids')
                 before=insertion_anchor(xml,later)
-                cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',before],heading)
+                if before_insert:
+                    before_insert()
+                cli(['+update','--doc',document_id,'--command','block_insert_after','--block-id',before],insertion)
             else:
-                self.append_document(document_id,heading)
-            anchor=next((block for block,text in outline() if text==title),None)
-        if not anchor:
-            raise RuntimeError('无法定位排班章节')
+                if before_insert:
+                    before_insert()
+                self.append_document(document_id,insertion)
+            return
         xml=self.fetch_document(document_id,'--scope','section','--start-block-id',anchor,'--detail','with-ids')
         after=segment_anchor(xml,row['start'])
         if before_insert:
@@ -169,6 +190,12 @@ class LiveSessionSync:
         session = 'duty-'+hashlib.sha256(json.dumps(session_parts).encode()).hexdigest()[:20]
         identity = {k:slot[k] for k in ('room','group','personnel','since','until','source')}
         key = digest([session,base,table,FOLDER]);path=self.directory/(key+'.json')
+        legacy_key = digest([session,base,table,LEGACY_FOLDER])
+        legacy_path = self.directory/(legacy_key+'.json')
+        if path.exists() and legacy_path.exists():
+            raise RuntimeError('新旧文件夹均存在此场次回执，请核对后继续')
+        if legacy_path.exists():
+            key,path=legacy_key,legacy_path
         with (self.directory/(key+'.lock')).open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             state = json.loads(path.read_text()) if path.exists() else {'session_id':session,'identity':identity,'segments':{},'status':'new'}
@@ -182,6 +209,11 @@ class LiveSessionSync:
             if state['status']=='create_uncertain':
                 raise RuntimeError('创建文档结果不确定，请核对后修复回执')
             snapshot_hash = digest({'status_version':2,'rows':rows,'slot':slot,'ended':now >= slot['until'],'test_only':state.get('test_only',False)})
+            if (state['status'] == 'ready' and state.get('segments') and not state.get('pending')
+                    and now >= state.get('next_audit_at', 0)):
+                content=self.gateway.fetch_document(state['document_id'])
+                audit_fragments(content,rows,state['segments'])
+                save(next_audit_at=now+21600)
             if state.get('snapshot_hash') == snapshot_hash and state['status'] == 'ready' and not state.get('pending'):
                 return state
             self.gateway.validate_table(base,table,schedule=True)
@@ -213,8 +245,10 @@ class LiveSessionSync:
                     raise RuntimeError('创建场次记录结果不确定，请核对')
                 save(record_id=found.get('id') or found.get('record_id'),record_pending=False)
             if not state.get('record_id'):
+                if self.gateway.find_record(base,table,session,slot['room']):
+                    raise RuntimeError('表格已有此场次，请核对已有记录与本地回执')
                 save(record_pending=True)
-                record_id=self.gateway.create_record(base,table,fields)
+                record_id=self.gateway.create_record(base,table,fields,prechecked=True)
                 save(record_id=record_id,record_pending=False)
             save(slot=slot)
             pending=state.get('pending')
@@ -227,9 +261,7 @@ class LiveSessionSync:
                     state['segments'][pending['id']]=pending['digest']
                     save(pending=None,last_start=max(state.get('last_start',0),pending['start']))
                 else:
-                    if not any(r['id'] == pending['id'] and digest(r) == pending['digest'] for r in rows):
-                        raise RuntimeError('待重发片段已不在当前音频任务中，请核对回执')
-                    save(pending=None)
+                    raise RuntimeError('追加内容结果不确定：本次读取未见片段，但无法排除远端已写入后读到旧版本；请核对文档与回执')
             for row in rows:
                 if row['id'] in state['segments']:
                     continue
@@ -259,5 +291,6 @@ class LiveSessionSync:
             if state.get('fields_digest') != digest(fields):
                 self.gateway.update_record(base,table,state['record_id'],fields)
                 save(fields_digest=digest(fields))
-            save(status='ready',synced_at=now,record_status=fields['转写状态'],snapshot_hash=snapshot_hash)
+            save(status='ready',synced_at=now,record_status=fields['转写状态'],snapshot_hash=snapshot_hash,
+                 next_audit_at=state.get('next_audit_at',now+21600))
             return state

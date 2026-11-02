@@ -10,7 +10,8 @@ import subprocess
 import httpx
 from app.documents import render_xml
 
-FOLDER = 'Lwiof1pEglCsKgdpAU3caUUpnfh'
+FOLDER = 'ZvZ0fN9YdlYt26dGCMDcDjo3nMc'
+LEGACY_FOLDER = 'Lwiof1pEglCsKgdpAU3caUUpnfh'
 
 
 def cli(arguments, content):
@@ -53,10 +54,17 @@ def main():
     if not rows:
         raise SystemExit('No transcript segments in this time range.')
     # A snapshot is immutable: rerunning the same snapshot returns the prior receipt.
-    digest = hashlib.sha256(json.dumps({'folder': FOLDER, 'rows': rows}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     receipts = Path('generated/feishu-exports')
     receipts.mkdir(parents=True, exist_ok=True)
-    receipt = receipts / f'{digest}.json'
+    def receipt_for(folder):
+        key = hashlib.sha256(json.dumps({'folder': folder, 'rows': rows}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        return receipts / f'{key}.json'
+    receipt = receipt_for(FOLDER)
+    legacy_receipt = receipt_for(LEGACY_FOLDER)
+    if receipt.exists() and legacy_receipt.exists():
+        raise SystemExit('Both current and legacy export receipts exist; inspect before continuing')
+    if legacy_receipt.exists():
+        receipt = legacy_receipt
     if receipt.exists():
         saved = json.loads(receipt.read_text())
         if saved.get('status') == 'done':

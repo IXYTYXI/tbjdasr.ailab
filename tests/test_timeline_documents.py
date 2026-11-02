@@ -74,5 +74,6 @@ def test_earlier_chapter_fetches_preceding_blocks_before_insert():
     with patch('export_feishu.cli') as call:
         g.append_shift('doc',slot(),{'start':ts(9)},'<p>上午</p>')
     assert call.call_args_list[0].args[0][-2:]==['--block-id','intro']
-    assert call.call_args_list[1].args[0][-2:]==['--block-id','morning']
+    assert len(call.call_args_list)==1
+    assert '<p>上午</p>' in call.call_args_list[0].args[1]
     assert g.fetch_document.call_args_list[1].args==('doc','--detail','with-ids')

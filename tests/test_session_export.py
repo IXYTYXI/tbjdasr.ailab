@@ -31,6 +31,25 @@ def test_session_export_idempotent(tmp_path):
     assert '主播&lt;讲话&gt;' in g.append_document.call_args.args[1]
 
 
+def test_exporter_reuses_legacy_folder_receipt(tmp_path,monkeypatch):
+    import session_export
+    from export_feishu import LEGACY_FOLDER
+    e,g=exporter(tmp_path)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(session_export,'FOLDER',LEGACY_FOLDER)
+        first=run(e)
+    second=run(e)
+    assert first['document_id']==second['document_id']
+    g.create_document.assert_called_once()
+
+
+def test_new_documents_use_requested_folder():
+    import json
+    from export_feishu import FOLDER
+    assert FOLDER=='ZvZ0fN9YdlYt26dGCMDcDjo3nMc'
+    assert json.load(open('feishu_sessions.json'))['folder_token']==FOLDER
+
+
 def test_incomplete_asr_blocks_export(tmp_path):
     e,g=exporter(tmp_path)
     with pytest.raises(ValueError,match='未完成'):
@@ -56,6 +75,18 @@ def test_record_unknown_outcome_is_not_duplicated(tmp_path):
     g.create_record.side_effect=None
     with pytest.raises(RuntimeError,match='不确定'):run(e)
     g.create_record.assert_called_once()
+
+
+def test_export_record_preflight_failure_does_not_stick_uncertain(tmp_path):
+    import json
+    e,g=exporter(tmp_path)
+    g.find_record.side_effect=[None, RuntimeError('lookup failed'), None]
+    with pytest.raises(RuntimeError,match='lookup failed'):
+        run(e)
+    state=json.loads(next(tmp_path.glob('*.json')).read_text())
+    assert state['status']=='doc_done'
+    assert g.create_record.call_count==0
+    assert run(e)['status']=='done'
 
 
 def test_reusing_session_id_with_changed_content_requires_explicit_action(tmp_path):
