@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 ZONE = ZoneInfo('Asia/Shanghai')
 GROUPS = {'天猫', '初中', '高中', '小学'}
+TIME = re.compile(r'(\d{1,2})[:：](\d{2})\s*[-~～—]\s*(\d{1,2})[:：](\d{2})')
 
 
 def parse_schedule(data):
@@ -30,8 +31,10 @@ def parse_schedule(data):
     result, group, dates = [], None, {}
     for number, row in zip(numbers, rows):
         first = row[0].strip() if row else ''
-        if first in GROUPS | {'运营', '场控'}:
-            group, dates = first, {}
+        time_match = TIME.fullmatch(first)
+        # A new heading ends the previous group. Unknown titles such as 小初 must not inherit it.
+        if first and first != '日期' and not time_match:
+            group, dates = (first if first in GROUPS else None), {}
             continue
         if first == '日期':
             dates = {}
@@ -44,7 +47,7 @@ def parse_schedule(data):
                         raise ValueError('无法从同表完整日期确定唯一年份')
                     dates[col] = date(next(iter(years)), month, day)
             continue
-        match = re.fullmatch(r'(\d{1,2})[:：](\d{2})\s*[-~～—]\s*(\d{1,2})[:：](\d{2})', first)
+        match = time_match
         if group not in GROUPS or not match:
             continue
         if not dates:

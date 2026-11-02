@@ -32,6 +32,15 @@ def test_unknown_stream_mapping_cannot_export():
     assert len(mapped_slots(parse_schedule(sample()),{'live/taobao':'天猫'},'2026-09-17'))==1
 
 
+def test_unknown_heading_does_not_inherit_previous_group():
+    from duty_schedule import parse_schedule
+    data=sample()
+    data['annotated_csv'] += '\n[row=11] 小初,,,,\n[row=12] 日期,9月17日,9月18日,,\n[row=13] 20:00-24:00,小初主播,,,'
+    slots=parse_schedule(data)
+    assert len(slots)==3
+    assert {slot['group'] for slot in slots}=={'天猫','初中'}
+
+
 def test_rejects_overlapping_duties():
     from duty_schedule import parse_schedule
     data=sample()
