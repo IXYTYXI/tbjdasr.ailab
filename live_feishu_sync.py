@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 from html import escape
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -21,6 +22,62 @@ def stamp(value):
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def confirm_segment(state, job_id, value, now):
+    """Record a segment digest once. Later session saves must not move this time."""
+    state['segments'][job_id]=value
+    confirmed=state.get('segment_confirmed_at')
+    if not isinstance(confirmed, dict):
+        confirmed={}
+        state['segment_confirmed_at']=confirmed
+    confirmed.setdefault(job_id, now)
+
+
+def backfill_segment_confirmations(receipts, backup=None):
+    """Stamp segment_confirmed_at once, preserving an older backup sync time when the digest matches."""
+    receipts=Path(receipts)
+    previous={}
+    if backup:
+        for path in Path(backup).glob('*.json'):
+            try:saved=json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):continue
+            when=saved.get('synced_at')
+            if not isinstance(when,(int,float)) or not math.isfinite(when):continue
+            for job_id,value in (saved.get('segments') or {}).items():
+                if isinstance(job_id,str) and isinstance(value,str):
+                    previous.setdefault(job_id,[]).append((value,when))
+    report={'receipts':0,'stamped':0,'from_backup':0,'from_synced_at':0,'busy':0}
+    for path in sorted(receipts.glob('*.json')):
+        with path.with_suffix('.lock').open('a') as handle:
+            try:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:
+                report['busy']+=1
+                continue
+            state=json.loads(path.read_text())
+            segments=state.get('segments') or {}
+            if not isinstance(segments,dict):continue
+            confirmed=state.get('segment_confirmed_at')
+            if not isinstance(confirmed,dict):confirmed={}
+            changed=False
+            for job_id,value in segments.items():
+                if not isinstance(job_id,str) or not isinstance(value,str) or job_id in confirmed:continue
+                times=[seen for saved,seen in previous.get(job_id,()) if saved==value]
+                if times:
+                    confirmed[job_id]=min(times)
+                    report['from_backup']+=1
+                else:
+                    fallback=state.get('synced_at')
+                    if not isinstance(fallback,(int,float)) or not math.isfinite(fallback):continue
+                    confirmed[job_id]=fallback
+                    report['from_synced_at']+=1
+                report['stamped']+=1
+                changed=True
+            if changed:
+                state['segment_confirmed_at']=confirmed
+                atomic_json(path,state)
+                report['receipts']+=1
+    return report
 
 
 def atomic_json(path, data):
@@ -258,7 +315,7 @@ class LiveSessionSync:
                 if found in ('conflict','unknown'):
                     raise RuntimeError('追加内容结果不确定，请核对文档与回执，暂不重复追加')
                 if found == 'complete':
-                    state['segments'][pending['id']]=pending['digest']
+                    confirm_segment(state, pending['id'], pending['digest'], now)
                     save(pending=None,last_start=max(state.get('last_start',0),pending['start']))
                 else:
                     raise RuntimeError('追加内容结果不确定：本次读取未见片段，但无法排除远端已写入后读到旧版本；请核对文档与回执')
@@ -280,7 +337,7 @@ class LiveSessionSync:
                     self.gateway.append_shift(state['document_id'],slot,row,fragment,before_insert=before_insert)
                 else:
                     self.gateway.append_chapter(state['document_id'],slot['personnel'],fragment,before_insert=before_insert)
-                state['segments'][row['id']]=digest(row)
+                confirm_segment(state, row['id'], digest(row), now)
                 save(pending=None,last_start=max(state.get('last_start',0),row['start']))
             if any(r['state']=='failed' for r in rows):fields['转写状态']='有失败片段'
             elif any(r['state']!='succeeded' for r in rows):fields['转写状态']='等待转写'

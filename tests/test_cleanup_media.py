@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -82,4 +83,32 @@ def test_unsafe_or_unfinished_assets_kept(tmp_path,reason):
         outside=tmp_path/'outside.wav';outside.write_bytes(b'outside');audio.unlink();audio.symlink_to(outside)
     receipt.write_text(json.dumps(s))
     assert cleanup(data,receipt.parent,retention_hours=hours,apply=True)['deleted_files']==0
+    assert source.exists() and audio.exists()
+
+
+def test_later_session_sync_does_not_extend_confirmed_segment(tmp_path):
+    from cleanup_media import cleanup
+    data,db,source,audio,receipt,job=fixture(tmp_path)
+    os.utime(source,(0,0));os.utime(audio,(0,0))
+    with sqlite3.connect(data/'state.sqlite') as conn:
+        conn.execute('UPDATE assets SET updated=0')
+    s=json.loads(receipt.read_text())
+    s['synced_at']=1e10
+    s['segment_confirmed_at']={job['id']:0}
+    receipt.write_text(json.dumps(s))
+    result=cleanup(data,receipt.parent,retention_hours=24,apply=True)
+    assert result['deleted_files']==2 and not source.exists()
+
+
+def test_fresh_segment_confirmation_keeps_old_file(tmp_path):
+    from cleanup_media import cleanup
+    data,db,source,audio,receipt,job=fixture(tmp_path)
+    os.utime(source,(0,0));os.utime(audio,(0,0))
+    with sqlite3.connect(data/'state.sqlite') as conn:
+        conn.execute('UPDATE assets SET updated=0')
+    s=json.loads(receipt.read_text())
+    s['synced_at']=0
+    s['segment_confirmed_at']={job['id']:10**10}
+    receipt.write_text(json.dumps(s))
+    assert cleanup(data,receipt.parent,retention_hours=24,apply=True)['deleted_files']==0
     assert source.exists() and audio.exists()

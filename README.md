@@ -194,7 +194,7 @@ data/transcripts/live/jingdong.txt
 
 `export_feishu.py` 可在已有 `lark-cli` 用户授权的管理电脑上执行。它按选择的时间范围生成快照，用 `--as user` 创建文档，固定放到用户指定文件夹：
 
-`https://guanghe.feishu.cn/drive/folder/ZvZ0fN9YdlYt26dGCMDcDjo3nMc`
+`https://guanghe.feishu.cn/drive/folder/Lwiof1pEglCsKgdpAU3caUUpnfh`
 
 该脚本需要管理端 Python/httpx 和 lark-cli，**直播电脑不需要安装这些组件**。Docker 收流服务不包含 lark-cli，文档上传不是默认后台自动任务。
 
@@ -245,7 +245,7 @@ MEDIAMTX_BIN=/path/to/mediamtx python -m pytest tests/test_rtmp_integration.py -
 
 ## 9. 按场次同步快照到飞书文档和多维表格
 
-管理端新增 `session_export.py`：为指定直播间和时间范围创建一篇用户身份的飞书文档，存入固定文件夹 `ZvZ0fN9YdlYt26dGCMDcDjo3nMc`，文档完成后才在目标多维表格创建场次记录。逐字稿不写入多维表格。
+管理端新增 `session_export.py`：为指定直播间和时间范围创建一篇用户身份的飞书文档，存入固定文件夹 `Lwiof1pEglCsKgdpAU3caUUpnfh`，文档完成后才在目标多维表格创建场次记录。逐字稿不写入多维表格。
 
 目标数据表需具备以下字段，写入前脚本会校验实际结构：
 
@@ -284,7 +284,7 @@ python session_export.py \
 ## 10. 按值班表归档到飞书
 
 目标表：[直播场次与转写](https://guanghe.feishu.cn/base/Dj7lbtbChamBA7sLbtAczWYMntc?table=tblcnhzKQ6Ivv9VS)。
-转写文档：[指定目录](https://guanghe.feishu.cn/drive/folder/ZvZ0fN9YdlYt26dGCMDcDjo3nMc)。已有旧目录文档继续复用原回执；新文档写入指定目录。
+转写文档放在专有目录 [Lwiof1pEglCsKgdpAU3caUUpnfh](https://guanghe.feishu.cn/drive/folder/Lwiof1pEglCsKgdpAU3caUUpnfh)。这是指定目录，不因其他调用方、程序默认值或历史目录而更换。2026-11-03 起误建到另一目录的文档继续复用原回执，不另建一份；新文档仍写入该专有目录。
 
 `feishu_sessions.json` 已填写资源位置。当前整体排班位于「7月整体排班」工作表（不是历史「天猫」页）。
 已确认淘宝、京东、天猫是同一场直播，统一使用「天猫」排班。当前只用 `live/taobao` 作为归档音频来源，每个班次生成一篇文档和一条记录。
@@ -420,7 +420,8 @@ python benchmark_asr.py --output /data/benchmarks/unique-run --seconds 1800 --wa
 
 `cleanup_media.py` 只处理带关闭标记且提取完成的录音，要求全部音频任务成功，
 并与当前正式批次的飞书文档、表格写入回执逐项核对内容摘要；有未决写入、缺失片段、
-失败任务或测试标记时不删除。默认在完成同步及文件最后写入后至少保留 24 小时。
+失败任务或测试标记时不删除。保留期从该片段首次写入回执的时间，以及文件最后写入时间起算，至少 24 小时。
+同一场次后来再次同步、只刷新场次 `synced_at` 时，不延长已经确认片段的保留期。
 文档后来被人为删除不在本地回执检查范围内。
 
 预览（不删除）：

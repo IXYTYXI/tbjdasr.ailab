@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock
 import pytest
 
@@ -17,6 +18,29 @@ def slot():
 
 def row(id='a',start=110,state='succeeded'):
     return {'id':id,'room':'live/taobao','start':start,'duration':10,'state':state,'text':'这是一段<文字>','provider':'feishu'}
+
+
+def test_resnapshot_does_not_move_segment_confirmation(tmp_path):
+    e,g=setup(tmp_path)
+    first=e.sync(slot(),[row()],'base','table',now=150)
+    assert first['segment_confirmed_at']['a']==150
+    again=e.sync(slot(),[row(),row('b',130,'failed')],'base','table',now=999)
+    assert again['synced_at']==999
+    assert again['segment_confirmed_at']['a']==150
+    assert 'b' not in again['segments']
+
+
+def test_backfill_keeps_backup_time_for_matching_digest(tmp_path):
+    from live_feishu_sync import backfill_segment_confirmations
+    backup=tmp_path/'backup';backup.mkdir()
+    current=tmp_path/'current';current.mkdir()
+    (backup/'old.json').write_text(json.dumps({'synced_at':10,'segments':{'job':'digest'}}))
+    (current/'now.json').write_text(json.dumps({'synced_at':999,'segments':{'job':'digest','new':'later'}}))
+    report=backfill_segment_confirmations(current,backup)
+    saved=json.loads((current/'now.json').read_text())
+    assert report['from_backup']==1 and report['from_synced_at']==1
+    assert saved['segment_confirmed_at']=={'job':10,'new':999}
+    assert backfill_segment_confirmations(current,backup)['stamped']==0
 
 
 def test_incremental_restart_one_document_and_one_record(tmp_path):

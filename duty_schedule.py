@@ -8,6 +8,35 @@ from zoneinfo import ZoneInfo
 ZONE = ZoneInfo('Asia/Shanghai')
 GROUPS = {'天猫', '初中', '高中', '小学'}
 TIME = re.compile(r'(\d{1,2})[:：](\d{2})\s*[-~～—]\s*(\d{1,2})[:：](\d{2})')
+MONTH_DAY = re.compile(r'(\d{1,2})月(\d{1,2})日')
+
+
+def canonical_group(title):
+    """Map a section heading to a duty group.
+
+    The historical sheet uses 天猫. From 2026-11-16 the same live room is headed
+    天猫：洋葱学园旗舰店, with the date row labeled by the room code 脉冲星.
+    天猫：洋葱学园素养店 overlaps those hours and is a different room.
+    """
+    if title in GROUPS:
+        return title
+    if (title.startswith('天猫：') or title.startswith('天猫:')) and '旗舰店' in title:
+        return '天猫'
+    return None
+
+
+def month_day_dates(row, anchors):
+    found = {}
+    for col, value in enumerate(row[1:8], 1):
+        match = MONTH_DAY.fullmatch(value.strip())
+        if not match:
+            continue
+        month, day = map(int, match.groups())
+        years = anchors.get((month, day), set())
+        if len(years) != 1:
+            raise ValueError('无法从同表完整日期确定唯一年份')
+        found[col] = date(next(iter(years)), month, day)
+    return found
 
 
 def parse_schedule(data):
@@ -32,20 +61,14 @@ def parse_schedule(data):
     for number, row in zip(numbers, rows):
         first = row[0].strip() if row else ''
         time_match = TIME.fullmatch(first)
-        # A new heading ends the previous group. Unknown titles such as 小初 must not inherit it.
-        if first and first != '日期' and not time_match:
-            group, dates = (first if first in GROUPS else None), {}
+        # Date headers are either「日期,11月16日」or「脉冲星,11月16日」.
+        # Recognize them before headings so a room code does not clear the group.
+        if first == '日期' or any(MONTH_DAY.fullmatch(cell.strip()) for cell in row[1:8]):
+            dates = month_day_dates(row, anchors)
             continue
-        if first == '日期':
-            dates = {}
-            for col, value in enumerate(row[1:8], 1):
-                match = re.fullmatch(r'(\d{1,2})月(\d{1,2})日', value.strip())
-                if match:
-                    month, day = map(int, match.groups())
-                    years = anchors.get((month, day), set())
-                    if len(years) != 1:
-                        raise ValueError('无法从同表完整日期确定唯一年份')
-                    dates[col] = date(next(iter(years)), month, day)
+        # A new heading ends the previous group. Unknown titles such as 小初 must not inherit it.
+        if first and not time_match:
+            group, dates = canonical_group(first), {}
             continue
         match = time_match
         if group not in GROUPS or not match:

@@ -10,8 +10,10 @@ import subprocess
 import httpx
 from app.documents import render_xml
 
-FOLDER = 'ZvZ0fN9YdlYt26dGCMDcDjo3nMc'
-LEGACY_FOLDER = 'Lwiof1pEglCsKgdpAU3caUUpnfh'
+# 天猫转写的专有目录。不得因其他调用方、程序默认值或历史目录而改写。
+FOLDER = 'Lwiof1pEglCsKgdpAU3caUUpnfh'
+# 2026-11-02 误改目录后新建的文档回执。只用于继续写入原文档，不再作为新建目录。
+LEGACY_FOLDER = 'ZvZ0fN9YdlYt26dGCMDcDjo3nMc'
 
 
 def cli(arguments, content):

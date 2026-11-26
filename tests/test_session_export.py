@@ -46,7 +46,7 @@ def test_exporter_reuses_legacy_folder_receipt(tmp_path,monkeypatch):
 def test_new_documents_use_requested_folder():
     import json
     from export_feishu import FOLDER
-    assert FOLDER=='ZvZ0fN9YdlYt26dGCMDcDjo3nMc'
+    assert FOLDER=='Lwiof1pEglCsKgdpAU3caUUpnfh'
     assert json.load(open('feishu_sessions.json'))['folder_token']==FOLDER
 
 

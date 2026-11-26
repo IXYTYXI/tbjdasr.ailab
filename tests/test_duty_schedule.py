@@ -32,6 +32,25 @@ def test_unknown_stream_mapping_cannot_export():
     assert len(mapped_slots(parse_schedule(sample()),{'live/taobao':'天猫'},'2026-09-17'))==1
 
 
+def test_flagship_store_heading_continues_tmall_group():
+    from duty_schedule import parse_schedule, mapped_slots
+    data = sample()
+    data['annotated_csv'] += (
+        '\n[row=11] 天猫：洋葱学园旗舰店,,,,'
+        '\n[row=12] 脉冲星,9月19日,2026/9/19,,'
+        '\n[row=13] ,周五,,,'
+        '\n[row=14] 8:00-12:00,旗舰主播,,,'
+        '\n[row=15] 天猫：洋葱学园素养店,,,,'
+        '\n[row=16] EVA,9月19日,,,'
+        '\n[row=17] 8:00-12:00,素养主播,,,'
+    )
+    slots = parse_schedule(data)
+    flagged = [slot for slot in slots if slot['personnel'] in ('旗舰主播', '素养主播')]
+    assert [(slot['group'], slot['personnel'], slot['date']) for slot in flagged] == [
+        ('天猫', '旗舰主播', '2026-09-19')]
+    assert len(mapped_slots(slots, {'live/taobao': '天猫'}, '2026-09-19')) == 1
+
+
 def test_unknown_heading_does_not_inherit_previous_group():
     from duty_schedule import parse_schedule
     data=sample()

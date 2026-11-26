@@ -46,8 +46,13 @@ def cleanup(data, receipts, retention_hours=24, apply=False, now=None):
             s=json.loads(path.read_text())
             if s.get('status')!='ready' or s.get('pending') or s.get('record_pending') or s.get('test_only'):continue
             if not s.get('document_id') or not s.get('record_id'):continue
+            segment_times=s.get('segment_confirmed_at') if isinstance(s.get('segment_confirmed_at'),dict) else {}
             for job_id,value in s.get('segments',{}).items():
-                confirmed.setdefault(job_id,[]).append((value,s.get('synced_at',now)))
+                # A later rewrite of the session synced_at must not extend retention
+                # for a fragment that was already confirmed.
+                when=segment_times.get(job_id,s.get('synced_at',now))
+                if not isinstance(when,(int,float)) or not math.isfinite(when):when=s.get('synced_at',now)
+                confirmed.setdefault(job_id,[]).append((value,when))
         db=sqlite3.connect('file:'+str(data/'state.sqlite')+'?mode=rw',uri=True,timeout=30)
         stack.callback(db.close);db.row_factory=sqlite3.Row
         # A read snapshot keeps the eligibility checks consistent without holding
