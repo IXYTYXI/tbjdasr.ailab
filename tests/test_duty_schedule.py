@@ -32,7 +32,7 @@ def test_unknown_stream_mapping_cannot_export():
     assert len(mapped_slots(parse_schedule(sample()),{'live/taobao':'天猫'},'2026-09-17'))==1
 
 
-def test_tmall_heading_ignores_store_name():
+def test_only_flagship_store_heading_maps_to_tmall():
     from duty_schedule import parse_schedule, mapped_slots
     data = sample()
     data['annotated_csv'] += (
@@ -47,9 +47,8 @@ def test_tmall_heading_ignores_store_name():
     slots = parse_schedule(data)
     flagged = [slot for slot in slots if slot['personnel'] in ('旗舰主播', '素养主播')]
     assert [(slot['group'], slot['personnel'], slot['date']) for slot in flagged] == [
-        ('天猫', '旗舰主播', '2026-09-19'),
-        ('天猫', '素养主播', '2026-09-19')]
-    assert len(mapped_slots(slots, {'live/taobao': '天猫'}, '2026-09-19')) == 2
+        ('天猫', '旗舰主播', '2026-09-19')]
+    assert len(mapped_slots(slots, {'live/taobao': '天猫'}, '2026-09-19')) == 1
 
 
 def test_unknown_heading_does_not_inherit_previous_group():

@@ -11,15 +11,21 @@ TIME = re.compile(r'(\d{1,2})[:：](\d{2})\s*[-~～—]\s*(\d{1,2})[:：](\d{2})
 MONTH_DAY = re.compile(r'(\d{1,2})月(\d{1,2})日')
 
 
+FLAGSHIP_STORE = '洋葱学园旗舰店'
+
+
 def canonical_group(title):
     """Map a section heading to a duty group.
 
-    天猫 and 天猫：… are the same group for now. Store names are not distinguished.
+    Only 天猫 and 天猫：洋葱学园旗舰店 belong to the 天猫 live room.
+    天猫：洋葱学园素养店 is a different store.
     """
     if title in GROUPS:
         return title
     if title.startswith('天猫：') or title.startswith('天猫:'):
-        return '天猫'
+        store = title.split('：', 1)[-1].split(':', 1)[-1].strip()
+        if store == FLAGSHIP_STORE:
+            return '天猫'
     return None
 
 
