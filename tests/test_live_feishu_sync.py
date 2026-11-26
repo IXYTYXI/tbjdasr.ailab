@@ -220,6 +220,28 @@ def test_daily_uncertain_insert_still_blocks_blind_resend(tmp_path):
     assert g.append_shift.call_count==1
 
 
+def test_absent_pending_fragment_is_appended_again(tmp_path):
+    from live_feishu_sync import LiveSessionSync
+    _,g=setup(tmp_path)
+    sync=LiveSessionSync(tmp_path,g,grouping='daily')
+    def append(doc,slot,audio,fragment, before_insert=None):
+        if before_insert:
+            before_insert()
+        if g.append_shift.call_count==1:
+            raise TimeoutError('lost response')
+    g.append_shift.side_effect=append
+    with pytest.raises(TimeoutError):
+        sync.sync(slot(),[row()],'base','table',now=150)
+    g.fetch_document.return_value='<p>无关标题</p><p>无关正文</p>'
+    with pytest.raises(RuntimeError,match='结果不确定'):
+        sync.sync(slot(),[row()],'base','table',now=160)
+    assert g.append_shift.call_count==1
+    result=sync.sync(slot(),[row()],'base','table',now=150+3600)
+    assert g.append_shift.call_count==2
+    assert set(result['segments'])=={'a'}
+    assert result.get('pending') is None
+
+
 @pytest.mark.parametrize('returncode,expected',[(0,'空响应'),(1,'退出码 1')])
 def test_fetch_document_reports_empty_cli_response(monkeypatch,returncode,expected):
     import subprocess

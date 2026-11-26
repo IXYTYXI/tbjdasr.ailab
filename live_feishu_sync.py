@@ -318,7 +318,14 @@ class LiveSessionSync:
                     confirm_segment(state, pending['id'], pending['digest'], now)
                     save(pending=None,last_start=max(state.get('last_start',0),pending['start']))
                 else:
-                    raise RuntimeError('追加内容结果不确定：本次读取未见片段，但无法排除远端已写入后读到旧版本；请核对文档与回执')
+                    # A read seconds later can still be stale, so a fresh pending
+                    # stays blocked. After an hour the fragment is still absent,
+                    # append it once. Receipts saved before `since` existed are
+                    # already past that wait. conflict/unknown never resend.
+                    since = pending.get('since')
+                    if since is not None and now - since < 3600:
+                        raise RuntimeError('追加内容结果不确定：本次读取未见片段，但无法排除远端已写入后读到旧版本；请核对文档与回执')
+                    save(pending=None)
             for row in rows:
                 if row['id'] in state['segments']:
                     continue
@@ -329,7 +336,7 @@ class LiveSessionSync:
                 fragment=segment_xml(row,late=row['start']<state.get('last_start',0))
                 def before_insert():
                     # A failed outline/section read has not sent this fragment.
-                    save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start']})
+                    save(pending={'id':row['id'],'digest':digest(row),'xml':fragment,'start':row['start'],'since':now})
                 if state.get('grouping', 'session') == 'session':
                     before_insert()
                     self.gateway.append_document(state['document_id'],fragment)
