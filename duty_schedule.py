@@ -14,13 +14,11 @@ MONTH_DAY = re.compile(r'(\d{1,2})月(\d{1,2})日')
 def canonical_group(title):
     """Map a section heading to a duty group.
 
-    The historical sheet uses 天猫. From 2026-11-16 the same live room is headed
-    天猫：洋葱学园旗舰店, with the date row labeled by the room code 脉冲星.
-    天猫：洋葱学园素养店 overlaps those hours and is a different room.
+    天猫 and 天猫：… are the same group for now. Store names are not distinguished.
     """
     if title in GROUPS:
         return title
-    if (title.startswith('天猫：') or title.startswith('天猫:')) and '旗舰店' in title:
+    if title.startswith('天猫：') or title.startswith('天猫:'):
         return '天猫'
     return None
 
@@ -61,7 +59,7 @@ def parse_schedule(data):
     for number, row in zip(numbers, rows):
         first = row[0].strip() if row else ''
         time_match = TIME.fullmatch(first)
-        # Date headers are either「日期,11月16日」or「脉冲星,11月16日」.
+        # Date headers are either「日期,11月16日」or a room label plus month-day cells.
         # Recognize them before headings so a room code does not clear the group.
         if first == '日期' or any(MONTH_DAY.fullmatch(cell.strip()) for cell in row[1:8]):
             dates = month_day_dates(row, anchors)
